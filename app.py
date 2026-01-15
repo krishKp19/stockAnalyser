@@ -19,11 +19,6 @@ st.markdown("""
         border-radius: 10px;
         color: white;
     }
-    .main-header {
-        font-size: 30px;
-        font-weight: bold;
-        color: #4CAF50;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,21 +34,10 @@ with st.sidebar:
 
 # --- HELPER FUNCTIONS ---
 
-def get_best_model(api_key):
-    genai.configure(api_key=api_key)
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Priority: Pro -> Flash -> Default
-        if 'models/gemini-1.5-pro' in models: return 'models/gemini-1.5-pro'
-        if 'models/gemini-1.5-flash' in models: return 'models/gemini-1.5-flash'
-        return 'gemini-1.5-flash'
-    except:
-        return 'gemini-1.5-flash'
-
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="2y") # Fetched 2y for better 200DMA calc
+        hist = stock.history(period="2y")
         if hist.empty: return None, None, None
         
         # Technical Indicators
@@ -61,17 +45,16 @@ def get_stock_data(ticker):
         hist['SMA_50'] = ta.sma(hist['Close'], length=50)
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
-        # Get Fundamental Info
         info = stock.info
         
-        # Safe Data Extraction (Handling percentages vs ratios)
+        # Safe Data Extraction
         def safe_get(key, unit=None):
             val = info.get(key, "N/A")
             if val == "N/A": return "N/A"
-            if unit == "%" and isinstance(val, (int, float)): return f"{val * 100:.2f}%" if val < 1 else f"{val:.2f}%" 
+            if unit == "%" and isinstance(val, (int, float)): 
+                return f"{val * 100:.2f}%" if val < 1 else f"{val:.2f}%" 
             return val
 
-        # Structuring Data for the AI
         data = {
             "Symbol": ticker,
             "Sector": info.get('sector', 'Unknown'),
@@ -80,29 +63,20 @@ def get_stock_data(ticker):
             "50 DMA": hist['SMA_50'].iloc[-1],
             "200 DMA": hist['SMA_200'].iloc[-1],
             "RSI": hist['RSI'].iloc[-1],
-            
-            # Phase 1: Safety
-            "Debt/Equity": info.get('debtToEquity', 'N/A'), # usually returned as %, e.g. 12.5
+            "Debt/Equity": info.get('debtToEquity', 'N/A'),
             "Current Ratio": info.get('currentRatio', 'N/A'),
-            
-            # Phase 2: Growth
-            "ROE": info.get('returnOnEquity', 'N/A'), # raw float usually 0.25 for 25%
+            "ROE": info.get('returnOnEquity', 'N/A'),
             "Rev Growth": info.get('revenueGrowth', 'N/A'),
             "Earnings Growth": info.get('earningsGrowth', 'N/A'),
-            
-            # Phase 3: Valuation
             "PE": info.get('trailingPE', 'N/A'),
             "PEG": info.get('pegRatio', 'N/A'),
-            "PriceToBook": info.get('priceToBook', 'N/A'),
-            
-            # Phase 6: Management/Ownership
+            "Book Value": info.get('bookValue', 'N/A'),
             "Insider Hold": info.get('heldPercentInsiders', 'N/A'),
             "Inst Hold": info.get('heldPercentInstitutions', 'N/A')
         }
         
         return stock, hist, data
     except Exception as e:
-        print(e)
         return None, None, None
 
 def get_news_summary(stock):
@@ -111,6 +85,30 @@ def get_news_summary(stock):
         return "\n".join([f"- {n['title']}" for n in news])
     except:
         return "No recent news."
+
+def run_ai_analysis(api_key, prompt):
+    """
+    Universal Fallback System: Tries multiple model names until one works.
+    """
+    genai.configure(api_key=api_key)
+    
+    # List of models to try in order of preference
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-pro",
+        "gemini-1.0-pro"
+    ]
+    
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text # If successful, return text and exit loop
+        except Exception:
+            continue # If failed, try the next model in the list
+            
+    return "❌ Error: All AI models failed. Please check your API Key or Quota."
 
 # --- MAIN APP ---
 st.title("📈 AI Hedge Fund Terminal")
@@ -125,13 +123,10 @@ if st.button("🚀 Run Full Analysis"):
             
             if stock and data:
                 # --- TAB LAYOUT ---
-                tab1, tab2 = st.tabs(["📝 Forensic Report", "📊 Visuals"])
+                tab1, tab2, tab3 = st.tabs(["📝 Forensic Report", "📊 Charts", "📰 News"])
                 
                 with tab1:
-                    # AI ANALYSIS
-                    model_name = get_best_model(api_key)
-                    model = genai.GenerativeModel(model_name)
-                    
+                    # PREPARE PROMPT
                     news_text = get_news_summary(stock)
                     
                     prompt = f"""
@@ -147,7 +142,7 @@ if st.button("🚀 Run Full Analysis"):
                     {news_text}
                     
                     ### INSTRUCTIONS:
-                    1. **Tone:** Professional, objective, analytical. NO "FAIL/PASS" labels. Use "Concerns", "Strong", "Neutral".
+                    1. **Tone:** Professional, objective. NO "FAIL/PASS" labels. Use "Concerns", "Strong", "Neutral".
                     2. **Structure:** Follow the 7 Phases strictly.
                     3. **Format:** For each phase, give an **Interpretation** paragraph first, then a **Metrics Table** showing [Metric | Actual | Threshold/Goal].
                     4. **Verdict:** Place the Recommendation (BUY/SELL/WAIT) at the very END.
@@ -155,26 +150,26 @@ if st.button("🚀 Run Full Analysis"):
                     ### THE 7 PHASES TO COVER:
                     
                     **Phase 1: Safety & Solvency**
-                    - Check Debt/Equity (Target < 1.0 or < 100%). Note: If D/E is > 200, it is high.
+                    - Check Debt/Equity (Target < 1.0 or < 100%).
                     - Check Current Ratio (Target > 1.5).
                     
                     **Phase 2: The Profit Engine**
                     - Check ROE (Target > 15%).
-                    - Check Growth (Target > 20% for high growth, > 10% for stable).
+                    - Check Growth (Target > 20% for high growth).
                     
                     **Phase 3: Valuation**
                     - Check P/E vs typical range.
                     - Check PEG (Target < 1.5).
                     
                     **Phase 4: Sector-Specific Logic**
-                    - Based on the Sector ({data['Sector']}), mention what specific metrics matter (even if you don't have the raw data, mention what the user should check manually, e.g., NIM for Banks, Order Book for Infra).
+                    - Based on the Sector ({data['Sector']}), mention specific metrics the user should manually check (e.g. NPA for Banks).
                     
                     **Phase 5: Technical Entry**
                     - Compare Price vs 200 DMA (Trend).
                     - Check RSI (40-60 is entry, >70 is hot).
                     
                     **Phase 6: Smart Money (Management)**
-                    - Analyze Insider & Institutional Holding. High Inst holding is good.
+                    - Analyze Insider & Institutional Holding.
                     
                     **Phase 7: Exit Risks**
                     - What could go wrong? (Regulatory, commodity prices, governance).
@@ -186,8 +181,9 @@ if st.button("🚀 Run Full Analysis"):
                     **Summary:** (2 lines on why)
                     """
                     
-                    response = model.generate_content(prompt)
-                    st.markdown(response.text)
+                    # RUN AI WITH FALLBACK
+                    report = run_ai_analysis(api_key, prompt)
+                    st.markdown(report)
 
                 with tab2:
                     st.subheader("Price Action")
@@ -199,5 +195,13 @@ if st.button("🚀 Run Full Analysis"):
                     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue'), name='200 DMA'))
                     fig.update_layout(height=600, template="plotly_dark")
                     st.plotly_chart(fig, use_container_width=True)
+
+                with tab3:
+                    st.subheader("Latest Headlines")
+                    for n in stock.news[:5]:
+                        st.markdown(f"**{n['title']}**")
+                        if 'link' in n:
+                            st.markdown(f"[Read Article]({n['link']})")
+                        st.divider()
             else:
                 st.error("Ticker not found.")
