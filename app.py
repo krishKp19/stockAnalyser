@@ -5,10 +5,10 @@ import pandas as pd
 import pandas_ta as ta
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="💰 AI Stock Auditor", layout="wide")
+st.set_page_config(page_title="💰 AI Stock Auditor (Pro)", layout="wide")
 
 # --- TITLE & SIDEBAR ---
-st.title("💰 AI Stock Forensic Auditor")
+st.title("💰 AI Stock Forensic Auditor (Pro Edition)")
 st.markdown("Enter a stock ticker to run the **7-Phase High-Profit Framework**.")
 
 with st.sidebar:
@@ -17,6 +17,7 @@ with st.sidebar:
     api_key = st.text_input("Enter Gemini API Key", type="password")
     st.markdown("[Get Free Key Here](https://aistudio.google.com/)")
     st.info("💡 Note: For Indian stocks, add .NS (e.g. COALINDIA.NS)")
+    st.caption("Running on: Gemini 1.5 Pro (with Flash Fallback)")
 
 # --- DATA FETCHING FUNCTION ---
 def get_stock_data(ticker):
@@ -62,7 +63,7 @@ def get_stock_data(ticker):
             "RSI (14)": round(rsi_val, 2),
             "50 DMA": round(sma_50_val, 2),
             "200 DMA": round(sma_200_val, 2),
-            "Tech Trend": "BULLISH" if current_price > sma_200_val else "BEARISH"
+            "Tech Trend": "BULLISH 🟢" if current_price > sma_200_val else "BEARISH 🔴"
         }
         return data
     except Exception as e:
@@ -88,15 +89,22 @@ if run_btn:
                 # 3. Display Key Metrics Dashboard
                 st.success("Data Fetched Successfully!")
                 
+                # Row 1: Key Fundamentals
+                st.subheader("📊 Key Metrics")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Current Price", f"₹{stock_data['Current Price']}")
-                col2.metric("RSI Momentum", stock_data['RSI (14)'])
-                col3.metric("P/E Ratio", stock_data['P/E Ratio'])
-                col4.metric("Trend (200 DMA)", stock_data['Tech Trend'])
+                col2.metric("P/E Ratio", stock_data['P/E Ratio'])
+                col3.metric("RSI (Momentum)", stock_data['RSI (14)'])
+                col4.metric("Debt/Equity", stock_data['Debt/Equity'])
+                
+                # Row 2: Technical Levels
+                st.subheader("📈 Technical Levels")
+                tech_col1, tech_col2, tech_col3 = st.columns(3)
+                tech_col1.metric("50 DMA", f"₹{stock_data['50 DMA']}")
+                tech_col2.metric("200 DMA", f"₹{stock_data['200 DMA']}")
+                tech_col3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
                 
                 # 4. The AI Analysis Prompt
-                model = genai.GenerativeModel('gemini-1.5-pro-latest')
-                
                 prompt = f"""
                 You are a ruthless Hedge Fund Analyst. I have given you live data for {stock_data['Symbol']}.
                 
@@ -127,16 +135,26 @@ if run_btn:
                 * [Cheap/Expensive] Analysis of P/E and PEG...
                 
                 ## 📈 Phase 4: Technical Entry
-                * **Trend:** (Above/Below 200 DMA)
-                * **Momentum:** (RSI Analysis)
+                * **Trend:** Price is {stock_data['Tech Trend']} 200 DMA
+                * **Momentum:** RSI is {stock_data['RSI (14)']}
                 * **Action:** (Buy Now / Wait for Dip to X)
                 
                 ## ⚠️ Key Risks
                 (Bullet points)
                 """
                 
-                # 5. Generate and Stream Result
-                response = model.generate_content(prompt)
+                # 5. Generate with SMART FALLBACK
+                try:
+                    # Try using the PRO model first
+                    model = genai.GenerativeModel('gemini-1.5-pro')
+                    response = model.generate_content(prompt)
+                    st.toast("✅ Analysis powered by Gemini 1.5 Pro", icon="🧠")
+                except Exception as e:
+                    # If Pro fails (Quota exceeded or Error), fallback to FLASH
+                    st.warning("⚠️ Pro model busy/quota exceeded. Switching to Gemini Flash (Faster).")
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    response = model.generate_content(prompt)
+
                 st.markdown("---")
                 st.markdown("## 📝 AI Forensic Report")
                 st.markdown(response.text)
