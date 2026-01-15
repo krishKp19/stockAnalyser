@@ -3,169 +3,201 @@ import google.generativeai as genai
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
+import plotly.graph_objects as go
+from datetime import datetime
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="💰 AI Stock Auditor", layout="wide")
+st.set_page_config(page_title="💰 AI Hedge Fund Terminal", layout="wide", page_icon="📈")
 
-# --- TITLE & SIDEBAR ---
-st.title("💰 AI Stock Forensic Auditor")
-st.markdown("Enter a stock ticker to run the **7-Phase High-Profit Framework**.")
+# --- CUSTOM CSS ---
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #1e1e1e;
+        border: 1px solid #333;
+        padding: 15px;
+        border-radius: 10px;
+        color: white;
+    }
+    .main-header {
+        font-size: 30px;
+        font-weight: bold;
+        color: #4CAF50;
+    }
+</style>
+""", unsafe_allow_html=True)
 
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("🔑 Configuration")
-    api_key = st.text_input("Enter Gemini API Key", type="password")
-    st.markdown("[Get Free Key Here](https://aistudio.google.com/)")
-    st.info("💡 Note: For Indian stocks, add .NS (e.g. COALINDIA.NS)")
+    st.header("🔑 Login")
+    api_key = st.text_input("Gemini API Key", type="password")
+    st.markdown("[Get Free Key](https://aistudio.google.com/)")
+    st.divider()
+    st.header("⚙️ Settings")
+    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
+    st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
 
-# --- MODEL SELECTOR ---
-def get_best_available_model(api_key):
-    """
-    Scans the user's API key to find which models are actually available.
-    """
+# --- HELPER FUNCTIONS ---
+
+def get_best_model(api_key):
     genai.configure(api_key=api_key)
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priority_order = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-pro',
-            'models/gemini-pro'
-        ]
-        for p in priority_order:
-            if p in models:
-                return p
-        for m in models:
-            if 'gemini' in m:
-                return m
-        return "models/gemini-1.5-flash"
-    except Exception:
-        return "gemini-1.5-flash"
+        # Priority: Pro -> Flash -> Default
+        if 'models/gemini-1.5-pro' in models: return 'models/gemini-1.5-pro'
+        if 'models/gemini-1.5-flash' in models: return 'models/gemini-1.5-flash'
+        return 'gemini-1.5-flash'
+    except:
+        return 'gemini-1.5-flash'
 
-# --- DATA FETCHING FUNCTION ---
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
+        hist = stock.history(period="2y") # Fetched 2y for better 200DMA calc
+        if hist.empty: return None, None, None
         
-        if hist.empty:
-            return None
-        
+        # Technical Indicators
         hist['RSI'] = ta.rsi(hist['Close'], length=14)
         hist['SMA_50'] = ta.sma(hist['Close'], length=50)
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
-        current_price = hist['Close'].iloc[-1]
-        rsi_val = hist['RSI'].iloc[-1]
-        sma_50_val = hist['SMA_50'].iloc[-1]
-        sma_200_val = hist['SMA_200'].iloc[-1]
-        
+        # Get Fundamental Info
         info = stock.info
         
-        def safe_get(key):
-            return info.get(key, "N/A")
+        # Safe Data Extraction (Handling percentages vs ratios)
+        def safe_get(key, unit=None):
+            val = info.get(key, "N/A")
+            if val == "N/A": return "N/A"
+            if unit == "%" and isinstance(val, (int, float)): return f"{val * 100:.2f}%" if val < 1 else f"{val:.2f}%" 
+            return val
 
+        # Structuring Data for the AI
         data = {
             "Symbol": ticker,
-            "Current Price": round(current_price, 2),
-            "Market Cap": safe_get("marketCap"),
-            "P/E Ratio": safe_get("trailingPE"),
-            "PEG Ratio": safe_get("pegRatio"),
-            "ROE": safe_get("returnOnEquity"),
-            "Debt/Equity": safe_get("debtToEquity"),
-            "Current Ratio": safe_get("currentRatio"),
-            "Profit Growth": safe_get("earningsGrowth"),
-            "Revenue Growth": safe_get("revenueGrowth"),
-            "52W High": safe_get("fiftyTwoWeekHigh"),
-            "RSI (14)": round(rsi_val, 2),
-            "50 DMA": round(sma_50_val, 2),
-            "200 DMA": round(sma_200_val, 2),
-            "Tech Trend": "BULLISH 🟢" if current_price > sma_200_val else "BEARISH 🔴"
+            "Sector": info.get('sector', 'Unknown'),
+            "Industry": info.get('industry', 'Unknown'),
+            "Price": hist['Close'].iloc[-1],
+            "50 DMA": hist['SMA_50'].iloc[-1],
+            "200 DMA": hist['SMA_200'].iloc[-1],
+            "RSI": hist['RSI'].iloc[-1],
+            
+            # Phase 1: Safety
+            "Debt/Equity": info.get('debtToEquity', 'N/A'), # usually returned as %, e.g. 12.5
+            "Current Ratio": info.get('currentRatio', 'N/A'),
+            
+            # Phase 2: Growth
+            "ROE": info.get('returnOnEquity', 'N/A'), # raw float usually 0.25 for 25%
+            "Rev Growth": info.get('revenueGrowth', 'N/A'),
+            "Earnings Growth": info.get('earningsGrowth', 'N/A'),
+            
+            # Phase 3: Valuation
+            "PE": info.get('trailingPE', 'N/A'),
+            "PEG": info.get('pegRatio', 'N/A'),
+            "PriceToBook": info.get('priceToBook', 'N/A'),
+            
+            # Phase 6: Management/Ownership
+            "Insider Hold": info.get('heldPercentInsiders', 'N/A'),
+            "Inst Hold": info.get('heldPercentInstitutions', 'N/A')
         }
-        return data
-    except Exception:
-        return None
+        
+        return stock, hist, data
+    except Exception as e:
+        print(e)
+        return None, None, None
 
-# --- MAIN APP LOGIC ---
-ticker_input = st.text_input("Enter Ticker Symbol", value="COALINDIA.NS")
-run_btn = st.button("🚀 Run Forensic Audit")
+def get_news_summary(stock):
+    try:
+        news = stock.news[:3]
+        return "\n".join([f"- {n['title']}" for n in news])
+    except:
+        return "No recent news."
 
-if run_btn:
+# --- MAIN APP ---
+st.title("📈 AI Hedge Fund Terminal")
+st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
+
+if st.button("🚀 Run Full Analysis"):
     if not api_key:
-        st.error("⚠️ Please enter your Gemini API Key in the sidebar first!")
+        st.error("Please enter API Key.")
     else:
-        with st.spinner(f"🕵️‍♂️ Auditing {ticker_input}... Fetching live data..."):
+        with st.spinner("🔄 Running 7-Phase Forensic Scan..."):
+            stock, hist, data = get_stock_data(ticker)
             
-            genai.configure(api_key=api_key)
-            stock_data = get_stock_data(ticker_input)
-            
-            if stock_data:
-                st.success("Data Fetched Successfully!")
+            if stock and data:
+                # --- TAB LAYOUT ---
+                tab1, tab2 = st.tabs(["📝 Forensic Report", "📊 Visuals"])
                 
-                # Metric Dashboard
-                st.subheader("📊 Key Metrics")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Current Price", f"₹{stock_data['Current Price']}")
-                col2.metric("P/E Ratio", stock_data['P/E Ratio'])
-                col3.metric("RSI (Momentum)", stock_data['RSI (14)'])
-                col4.metric("Debt/Equity", stock_data['Debt/Equity'])
-                
-                st.subheader("📈 Technical Levels")
-                tc1, tc2, tc3 = st.columns(3)
-                tc1.metric("50 DMA", f"₹{stock_data['50 DMA']}")
-                tc2.metric("200 DMA", f"₹{stock_data['200 DMA']}")
-                tc3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
-                
-                # AI Setup
-                best_model = get_best_available_model(api_key)
-                st.caption(f"🧠 AI Brain Active: {best_model}")
-                model = genai.GenerativeModel(best_model)
-                
-                # --- PROMPT START ---
-                prompt = f"""
-                You are a ruthless Hedge Fund Analyst. I have given you live data for {stock_data['Symbol']}.
-                
-                ### LIVE DATA:
-                {stock_data}
-                
-                ### YOUR MISSION:
-                Audit this stock against my strict "7-PHASE SAFETY & PROFIT FRAMEWORK".
-                
-                ### RULES:
-                1. SAFETY: Debt/Equity < 1.0? Current Ratio > 1.5? (Crucial)
-                2. EFFICIENCY: ROE > 15%?
-                3. GROWTH: Revenue/Earnings Growth > 20%? (If < 10%, it's slow).
-                4. VALUATION: PEG < 1.5? P/E vs Industry?
-                5. TECHNICALS: Price > 200 DMA? RSI between 40-60 is entry, >75 is dangerous.
-                
-                ### OUTPUT FORMAT (Markdown):
-                # 🚨 FINAL VERDICT: [BUY / SELL / WAIT]
-                *(One sentence summary)*
-                
-                ## 🛡️ Phase 1: Safety & Solvency
-                * [Pass/Fail] Analysis of Debt & Liquidity...
-                
-                ## 🚀 Phase 2: Growth Engine
-                * [Pass/Fail] Analysis of Growth & ROE...
-                
-                ## 💰 Phase 3: Valuation Check
-                * [Cheap/Expensive] Analysis of P/E and PEG...
-                
-                ## 📈 Phase 4: Technical Entry
-                * **Trend:** Price is {stock_data['Tech Trend']} 200 DMA
-                * **Momentum:** RSI is {stock_data['RSI (14)']}
-                * **Action:** (Buy Now / Wait for Dip to X)
-                
-                ## ⚠️ Key Risks
-                (Bullet points)
-                """
-                # --- PROMPT END ---
-                
-                try:
+                with tab1:
+                    # AI ANALYSIS
+                    model_name = get_best_model(api_key)
+                    model = genai.GenerativeModel(model_name)
+                    
+                    news_text = get_news_summary(stock)
+                    
+                    prompt = f"""
+                    You are a Senior Hedge Fund Analyst. Conduct a deep 7-PHASE FORENSIC AUDIT on {data['Symbol']}.
+                    
+                    ### THE DATA:
+                    {data}
+                    
+                    ### SECTOR CONTEXT:
+                    Sector: {data['Sector']} | Industry: {data['Industry']}
+                    
+                    ### RECENT NEWS:
+                    {news_text}
+                    
+                    ### INSTRUCTIONS:
+                    1. **Tone:** Professional, objective, analytical. NO "FAIL/PASS" labels. Use "Concerns", "Strong", "Neutral".
+                    2. **Structure:** Follow the 7 Phases strictly.
+                    3. **Format:** For each phase, give an **Interpretation** paragraph first, then a **Metrics Table** showing [Metric | Actual | Threshold/Goal].
+                    4. **Verdict:** Place the Recommendation (BUY/SELL/WAIT) at the very END.
+
+                    ### THE 7 PHASES TO COVER:
+                    
+                    **Phase 1: Safety & Solvency**
+                    - Check Debt/Equity (Target < 1.0 or < 100%). Note: If D/E is > 200, it is high.
+                    - Check Current Ratio (Target > 1.5).
+                    
+                    **Phase 2: The Profit Engine**
+                    - Check ROE (Target > 15%).
+                    - Check Growth (Target > 20% for high growth, > 10% for stable).
+                    
+                    **Phase 3: Valuation**
+                    - Check P/E vs typical range.
+                    - Check PEG (Target < 1.5).
+                    
+                    **Phase 4: Sector-Specific Logic**
+                    - Based on the Sector ({data['Sector']}), mention what specific metrics matter (even if you don't have the raw data, mention what the user should check manually, e.g., NIM for Banks, Order Book for Infra).
+                    
+                    **Phase 5: Technical Entry**
+                    - Compare Price vs 200 DMA (Trend).
+                    - Check RSI (40-60 is entry, >70 is hot).
+                    
+                    **Phase 6: Smart Money (Management)**
+                    - Analyze Insider & Institutional Holding. High Inst holding is good.
+                    
+                    **Phase 7: Exit Risks**
+                    - What could go wrong? (Regulatory, commodity prices, governance).
+                    
+                    ### FINAL OUTPUT:
+                    End with a clear section:
+                    # 🎯 FINAL INVESTMENT VERDICT
+                    **Recommendation:** [STRONG BUY / ACCUMULATE / WAIT / SELL]
+                    **Summary:** (2 lines on why)
+                    """
+                    
                     response = model.generate_content(prompt)
-                    st.markdown("---")
-                    st.markdown("## 📝 AI Forensic Report")
                     st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI Generation Failed: {e}")
+
+                with tab2:
+                    st.subheader("Price Action")
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(x=hist.index,
+                                    open=hist['Open'], high=hist['High'],
+                                    low=hist['Low'], close=hist['Close'], name='Price'))
+                    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange'), name='50 DMA'))
+                    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue'), name='200 DMA'))
+                    fig.update_layout(height=600, template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
             else:
-                st.error("❌ Error: Could not fetch data. Check the ticker symbol.")
+                st.error("Ticker not found.")
