@@ -16,72 +16,54 @@ with st.sidebar:
     api_key = st.text_input("Enter Gemini API Key", type="password")
     st.markdown("[Get Free Key Here](https://aistudio.google.com/)")
     st.info("💡 Note: For Indian stocks, add .NS (e.g. COALINDIA.NS)")
-    
-# --- MODEL SELECTOR (THE FIX) ---
+
+# --- MODEL SELECTOR ---
 def get_best_available_model(api_key):
     """
     Scans the user's API key to find which models are actually available.
-    Prioritizes Flash -> Pro -> Standard to prevent 404 errors.
     """
     genai.configure(api_key=api_key)
     try:
-        # Get list of all models available to this key
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priority List (Try these in order)
         priority_order = [
             'models/gemini-1.5-flash',
             'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-flash-001',
             'models/gemini-1.5-pro',
-            'models/gemini-1.5-pro-latest',
             'models/gemini-pro'
         ]
-        
         for p in priority_order:
             if p in models:
-                return p # Return the first match
-        
-        # If no exact match, take the first available 'gemini' model
+                return p
         for m in models:
             if 'gemini' in m:
                 return m
-                
-        return "models/gemini-1.5-flash" # Default fallback
-        
-    except Exception as e:
-        # If listing fails, return a safe default
+        return "models/gemini-1.5-flash"
+    except Exception:
         return "gemini-1.5-flash"
 
 # --- DATA FETCHING FUNCTION ---
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Fetch 1 year of history for technicals
         hist = stock.history(period="1y")
         
         if hist.empty:
             return None
         
-        # Calculate Technical Indicators
         hist['RSI'] = ta.rsi(hist['Close'], length=14)
         hist['SMA_50'] = ta.sma(hist['Close'], length=50)
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
-        # Get latest values
         current_price = hist['Close'].iloc[-1]
         rsi_val = hist['RSI'].iloc[-1]
         sma_50_val = hist['SMA_50'].iloc[-1]
         sma_200_val = hist['SMA_200'].iloc[-1]
         
-        # Get Fundamental Data
         info = stock.info
         
-        # Helper to safely get data
         def safe_get(key):
             return info.get(key, "N/A")
 
-        # Build the Data Dictionary
         data = {
             "Symbol": ticker,
             "Current Price": round(current_price, 2),
@@ -100,7 +82,7 @@ def get_stock_data(ticker):
             "Tech Trend": "BULLISH 🟢" if current_price > sma_200_val else "BEARISH 🔴"
         }
         return data
-    except Exception as e:
+    except Exception:
         return None
 
 # --- MAIN APP LOGIC ---
@@ -111,19 +93,15 @@ if run_btn:
     if not api_key:
         st.error("⚠️ Please enter your Gemini API Key in the sidebar first!")
     else:
-        with st.spinner(f"🕵️‍♂️ Auditing {ticker_input}... Fetching live data & Analyzing..."):
+        with st.spinner(f"🕵️‍♂️ Auditing {ticker_input}... Fetching live data..."):
             
-            # 1. Configure AI
             genai.configure(api_key=api_key)
-            
-            # 2. Get Data
             stock_data = get_stock_data(ticker_input)
             
             if stock_data:
-                # 3. Display Key Metrics Dashboard
                 st.success("Data Fetched Successfully!")
                 
-                # Row 1: Key Fundamentals
+                # Metric Dashboard
                 st.subheader("📊 Key Metrics")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Current Price", f"₹{stock_data['Current Price']}")
@@ -131,19 +109,18 @@ if run_btn:
                 col3.metric("RSI (Momentum)", stock_data['RSI (14)'])
                 col4.metric("Debt/Equity", stock_data['Debt/Equity'])
                 
-                # Row 2: Technical Levels
                 st.subheader("📈 Technical Levels")
-                tech_col1, tech_col2, tech_col3 = st.columns(3)
-                tech_col1.metric("50 DMA", f"₹{stock_data['50 DMA']}")
-                tech_col2.metric("200 DMA", f"₹{stock_data['200 DMA']}")
-                tech_col3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
+                tc1, tc2, tc3 = st.columns(3)
+                tc1.metric("50 DMA", f"₹{stock_data['50 DMA']}")
+                tc2.metric("200 DMA", f"₹{stock_data['200 DMA']}")
+                tc3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
                 
-                # 4. Find Best Model & Generate Analysis
+                # AI Setup
                 best_model = get_best_available_model(api_key)
-                st.caption(f"🧠 AI Brain Active: {best_model}") # Shows you which model it found
-                
+                st.caption(f"🧠 AI Brain Active: {best_model}")
                 model = genai.GenerativeModel(best_model)
                 
+                # --- PROMPT START ---
                 prompt = f"""
                 You are a ruthless Hedge Fund Analyst. I have given you live data for {stock_data['Symbol']}.
                 
@@ -179,4 +156,16 @@ if run_btn:
                 * **Action:** (Buy Now / Wait for Dip to X)
                 
                 ## ⚠️ Key Risks
-                (Bullet points
+                (Bullet points)
+                """
+                # --- PROMPT END ---
+                
+                try:
+                    response = model.generate_content(prompt)
+                    st.markdown("---")
+                    st.markdown("## 📝 AI Forensic Report")
+                    st.markdown(response.text)
+                except Exception as e:
+                    st.error(f"AI Generation Failed: {e}")
+            else:
+                st.error("❌ Error: Could not fetch data. Check the ticker symbol.")
