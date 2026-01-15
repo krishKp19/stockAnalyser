@@ -5,19 +5,18 @@ import pandas as pd
 import pandas_ta as ta
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="💰 AI Stock Auditor (Pro)", layout="wide")
+st.set_page_config(page_title="💰 AI Stock Auditor", layout="wide")
 
 # --- TITLE & SIDEBAR ---
-st.title("💰 AI Stock Forensic Auditor (Pro Edition)")
+st.title("💰 AI Stock Forensic Auditor")
 st.markdown("Enter a stock ticker to run the **7-Phase High-Profit Framework**.")
 
 with st.sidebar:
     st.header("🔑 Configuration")
-    # This input is safe because it's not saved anywhere
     api_key = st.text_input("Enter Gemini API Key", type="password")
     st.markdown("[Get Free Key Here](https://aistudio.google.com/)")
     st.info("💡 Note: For Indian stocks, add .NS (e.g. COALINDIA.NS)")
-    st.caption("Running on: Gemini 1.5 Pro (with Flash Fallback)")
+    st.caption("Running on: Gemini 1.5 Flash (Stable)")
 
 # --- DATA FETCHING FUNCTION ---
 def get_stock_data(ticker):
@@ -105,6 +104,9 @@ if run_btn:
                 tech_col3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
                 
                 # 4. The AI Analysis Prompt
+                # FIX: Using 'gemini-1.5-flash' which is universally available
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                
                 prompt = f"""
                 You are a ruthless Hedge Fund Analyst. I have given you live data for {stock_data['Symbol']}.
                 
@@ -143,21 +145,15 @@ if run_btn:
                 (Bullet points)
                 """
                 
-                # 5. Generate with SMART FALLBACK
+                # 5. Generate Result
                 try:
-                    # Try using the PRO model first
-                    model = genai.GenerativeModel('gemini-1.5-pro')
                     response = model.generate_content(prompt)
-                    st.toast("✅ Analysis powered by Gemini 1.5 Pro", icon="🧠")
+                    st.markdown("---")
+                    st.markdown("## 📝 AI Forensic Report")
+                    st.markdown(response.text)
                 except Exception as e:
-                    # If Pro fails (Quota exceeded or Error), fallback to FLASH
-                    st.warning("⚠️ Pro model busy/quota exceeded. Switching to Gemini Flash (Faster).")
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    response = model.generate_content(prompt)
-
-                st.markdown("---")
-                st.markdown("## 📝 AI Forensic Report")
-                st.markdown(response.text)
+                    st.error(f"AI Error: {e}")
+                    st.info("Troubleshooting: Check if your API Key is correct and has access to 'gemini-1.5-flash'.")
                 
             else:
                 st.error("❌ Error: Could not fetch data. Check the ticker symbol. For India, did you add '.NS'?")
