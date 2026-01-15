@@ -16,7 +16,42 @@ with st.sidebar:
     api_key = st.text_input("Enter Gemini API Key", type="password")
     st.markdown("[Get Free Key Here](https://aistudio.google.com/)")
     st.info("💡 Note: For Indian stocks, add .NS (e.g. COALINDIA.NS)")
-    st.caption("Running on: Gemini 1.5 Flash (Stable)")
+    
+# --- MODEL SELECTOR (THE FIX) ---
+def get_best_available_model(api_key):
+    """
+    Scans the user's API key to find which models are actually available.
+    Prioritizes Flash -> Pro -> Standard to prevent 404 errors.
+    """
+    genai.configure(api_key=api_key)
+    try:
+        # Get list of all models available to this key
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Priority List (Try these in order)
+        priority_order = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-1.5-flash-001',
+            'models/gemini-1.5-pro',
+            'models/gemini-1.5-pro-latest',
+            'models/gemini-pro'
+        ]
+        
+        for p in priority_order:
+            if p in models:
+                return p # Return the first match
+        
+        # If no exact match, take the first available 'gemini' model
+        for m in models:
+            if 'gemini' in m:
+                return m
+                
+        return "models/gemini-1.5-flash" # Default fallback
+        
+    except Exception as e:
+        # If listing fails, return a safe default
+        return "gemini-1.5-flash"
 
 # --- DATA FETCHING FUNCTION ---
 def get_stock_data(ticker):
@@ -103,9 +138,11 @@ if run_btn:
                 tech_col2.metric("200 DMA", f"₹{stock_data['200 DMA']}")
                 tech_col3.metric("Trend vs 200 DMA", stock_data['Tech Trend'])
                 
-                # 4. The AI Analysis Prompt
-                # FIX: Using 'gemini-1.5-flash' which is universally available
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                # 4. Find Best Model & Generate Analysis
+                best_model = get_best_available_model(api_key)
+                st.caption(f"🧠 AI Brain Active: {best_model}") # Shows you which model it found
+                
+                model = genai.GenerativeModel(best_model)
                 
                 prompt = f"""
                 You are a ruthless Hedge Fund Analyst. I have given you live data for {stock_data['Symbol']}.
@@ -142,18 +179,4 @@ if run_btn:
                 * **Action:** (Buy Now / Wait for Dip to X)
                 
                 ## ⚠️ Key Risks
-                (Bullet points)
-                """
-                
-                # 5. Generate Result
-                try:
-                    response = model.generate_content(prompt)
-                    st.markdown("---")
-                    st.markdown("## 📝 AI Forensic Report")
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
-                    st.info("Troubleshooting: Check if your API Key is correct and has access to 'gemini-1.5-flash'.")
-                
-            else:
-                st.error("❌ Error: Could not fetch data. Check the ticker symbol. For India, did you add '.NS'?")
+                (Bullet points
