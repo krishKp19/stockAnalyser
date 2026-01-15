@@ -1,12 +1,17 @@
 import streamlit as st
 import google.generativeai as genai
 import yfinance as yf
-import pandas as pd
 import pandas_ta as ta
-import plotly.graph_objects as go
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="📈")
+st.set_page_config(page_title="AI Hedge Fund Terminal (Lite)", layout="centered", page_icon="📝")
+
+# --- CUSTOM CSS ---
+st.markdown("""
+<style>
+    .report-text { font-family: 'Courier New', monospace; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -16,65 +21,115 @@ with st.sidebar:
     st.divider()
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
 
-# --- CACHED FUNCTIONS (The Fix: Returns only serializable data) ---
-
+# --- CACHED DATA ENGINE (Optimized for Stability) ---
 @st.cache_data(ttl=3600)
-def get_stock_analysis(ticker):
+def get_fundamental_data(ticker):
     """
-    Fetches ALL data (Price, Techs, Fundamentals, News) in one go.
-    Returns only DataFrames and Dictionaries (Safe for Caching).
+    Fetches only the scalars needed for the report. 
+    No heavy DataFrames are returned to the UI.
     """
     try:
         stock = yf.Ticker(ticker)
         
-        # 1. Fetch History
+        # 1. Get Technicals (Calc internal, return scalars)
         hist = stock.history(period="2y")
-        if hist.empty: return None, None
+        if hist.empty: return None
         
-        # 2. Calculate Technicals
+        # Calc Indicators using pandas_ta
         hist['RSI'] = ta.rsi(hist['Close'], length=14)
         hist['SMA_50'] = ta.sma(hist['Close'], length=50)
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
-        # 3. Get Fundamentals
+        # Extract latest values
+        latest = hist.iloc[-1]
+        
+        # 2. Get Fundamentals
         info = stock.info
         
-        # 4. Get News (Handled safely here)
+        # 3. Get News Summary (Text only)
         try:
-            news_items = stock.news[:3]
-            news_summary = "\n".join([f"- {n.get('title', 'No Title')}" for n in news_items])
+            news = stock.news[:3]
+            news_text = "\n".join([f"- {n.get('title')}" for n in news])
         except:
-            news_summary = "No recent news available."
+            news_text = "News Unavailable"
 
-        # 5. Package the Data
+        # 4. Build the "Prompt Payload" (Pure Dictionary)
         data = {
             "Symbol": ticker,
             "Sector": info.get('sector', 'Unknown'),
             "Industry": info.get('industry', 'Unknown'),
-            "Price": hist['Close'].iloc[-1],
-            "50 DMA": hist['SMA_50'].iloc[-1],
-            "200 DMA": hist['SMA_200'].iloc[-1],
-            "RSI": hist['RSI'].iloc[-1],
-            "Debt/Equity": info.get('debtToEquity', 'N/A'),
-            "Current Ratio": info.get('currentRatio', 'N/A'),
+            "Price": f"{latest['Close']:.2f}",
+            "RSI": f"{latest['RSI']:.2f}",
+            "50DMA": f"{latest['SMA_50']:.2f}",
+            "200DMA": f"{latest['SMA_200']:.2f}",
+            "Tech_Trend": "BULLISH" if latest['Close'] > latest['SMA_200'] else "BEARISH",
+            
+            # Fundamentals
+            "Debt_Equity": info.get('debtToEquity', 'N/A'),
+            "Current_Ratio": info.get('currentRatio', 'N/A'),
             "ROE": info.get('returnOnEquity', 'N/A'),
-            "Rev Growth": info.get('revenueGrowth', 'N/A'),
-            "Earnings Growth": info.get('earningsGrowth', 'N/A'),
+            "Rev_Growth": info.get('revenueGrowth', 'N/A'),
+            "Earnings_Growth": info.get('earningsGrowth', 'N/A'),
             "PE": info.get('trailingPE', 'N/A'),
             "PEG": info.get('pegRatio', 'N/A'),
-            "Insider Hold": info.get('heldPercentInsiders', 'N/A'),
-            "Inst Hold": info.get('heldPercentInstitutions', 'N/A'),
-            "News_Summary": news_summary # Stored as string, safe for cache
+            "Insider_Hold": info.get('heldPercentInsiders', 'N/A'),
+            "Inst_Hold": info.get('heldPercentInstitutions', 'N/A'),
+            
+            # News
+            "Recent_News": news_text
         }
-        
-        return hist, data # Returns DataFrame and Dict (Safe!)
+        return data
     except Exception as e:
-        return None, None
+        return None
 
-def run_ai_analysis(api_key, prompt):
+def run_forensic_ai(api_key, data):
     genai.configure(api_key=api_key)
-    # Smart Fallback List
-    models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest", "gemini-pro"]
+    # Priority: Flash (Fast) -> Pro (Deep) -> Standard
+    models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    
+    prompt = f"""
+    Role: Institutional Market Analyst.
+    Task: Write a "7-Phase Forensic Investment Report" for {data['Symbol']}.
+    
+    ### MARKET DATA:
+    {data}
+    
+    ### INSTRUCTIONS:
+    Analyze the data above and produce a structured report. 
+    - DO NOT use "Pass/Fail" labels. Use professional terms like "Concerning," "Robust," "Elevated."
+    - For every phase, provide a **Data Table** comparing Actual vs Ideal.
+    
+    ### REPORT STRUCTURE:
+    
+    **Phase 1: Solvency & Safety**
+    - Analyze Debt/Equity (Ideal < 100%) and Current Ratio (Ideal > 1.5).
+    - *Verdict on Bankruptcy Risk.*
+    
+    **Phase 2: Growth & Efficiency**
+    - Analyze ROE (Ideal > 15%) and Growth Rates.
+    - *Verdict on Quality.*
+    
+    **Phase 3: Valuation**
+    - Analyze P/E and PEG. Is it cheap or a trap?
+    
+    **Phase 4: Sector Nuances**
+    - Mention specific metrics relevant to {data['Sector']} that the user should check manually.
+    
+    **Phase 5: Technical Setup**
+    - Current Price vs 200 DMA ({data['Tech_Trend']}).
+    - RSI Status ({data['RSI']}).
+    - *Actionable Signal: Buy / Wait / Sell.*
+    
+    **Phase 6: Management & Sponsorship**
+    - Comment on Insider/Institutional holding.
+    
+    **Phase 7: Risk Factors**
+    - List 3 key risks (Regulatory, Macro, Company-specific).
+    
+    ### FINAL VERDICT:
+    # 🎯 INVESTMENT RECOMMENDATION: [BUY / ACCUMULATE / HOLD / SELL]
+    **Summary:** (One concise paragraph justifying the decision).
+    """
     
     for model_name in models:
         try:
@@ -83,70 +138,33 @@ def run_ai_analysis(api_key, prompt):
             return response.text
         except:
             continue
-    return "❌ Error: All AI models failed. Please check your API Key."
+    return "❌ Error: AI Service Unavailable. Please check API Key."
 
-# --- MAIN APP ---
-st.title("📈 AI Hedge Fund Terminal")
-st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
+# --- MAIN UI ---
+st.title("📝 AI Forensic Terminal (v1)")
+st.caption("Pure Metrics • No Charts • Maximum Stability")
 
-# --- INPUT FORM ---
+# Use a Form to prevent auto-reloading crashes
 with st.form("analysis_form"):
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker = st.text_input("Enter Ticker Symbol", value="COALINDIA.NS")
-    with col2:
-        submitted = st.form_submit_button("🚀 Run Analysis")
+    ticker = st.text_input("Enter Ticker", value="COALINDIA.NS")
+    submitted = st.form_submit_button("🚀 Generate Forensic Report")
 
 if submitted:
     if not api_key:
-        st.error("Please enter API Key in sidebar.")
+        st.error("⚠️ Please enter your Gemini API Key in the sidebar.")
     else:
-        with st.spinner(f"Analyzing {ticker}..."):
-            # Now returns only 2 items (hist, data)
-            hist, data = get_stock_analysis(ticker)
+        with st.spinner(f"Running Forensic Audit on {ticker}..."):
+            # 1. Get Data (Lightweight)
+            data = get_fundamental_data(ticker)
             
             if data:
-                # --- TAB LAYOUT ---
-                tab1, tab2 = st.tabs(["📝 Forensic Report", "📊 Charts"])
+                # 2. Run AI
+                report = run_forensic_ai(api_key, data)
                 
-                with tab1:
-                    prompt = f"""
-                    Role: Senior Analyst. Audit {data['Symbol']} using the 7-Phase Framework.
-                    
-                    DATA: {data}
-                    SECTOR: {data['Sector']}
-                    NEWS: {data['News_Summary']}
-                    
-                    TASK:
-                    1. Safety (Debt/Equity, Current Ratio).
-                    2. Growth (ROE, Revenue/Earnings).
-                    3. Valuation (PE, PEG).
-                    4. Sector Check (Mention key metrics for {data['Sector']}).
-                    5. Technicals (Price vs 200DMA, RSI).
-                    6. Management (Insider/Inst Holding).
-                    7. Risks.
-                    
-                    OUTPUT:
-                    Structured report with FINAL VERDICT (BUY/SELL/WAIT) at the end.
-                    """
-                    
-                    report = run_ai_analysis(api_key, prompt)
-                    st.markdown(report)
-
-                with tab2:
-                    st.subheader("Price Action")
-                    fig = go.Figure()
-                    fig.add_trace(go.Candlestick(x=hist.index,
-                                    open=hist['Open'], high=hist['High'],
-                                    low=hist['Low'], close=hist['Close'], name='Price'))
-                    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange'), name='50 DMA'))
-                    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue'), name='200 DMA'))
-                    fig.update_layout(height=600, template="plotly_dark")
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.divider()
-                    st.subheader("Recent Headlines")
-                    st.text(data['News_Summary'])
-
+                # 3. Display Report
+                st.markdown("---")
+                st.markdown(report)
+                st.markdown("---")
+                st.caption("Data Source: Yahoo Finance | Analysis: Google Gemini")
             else:
-                st.error("Ticker not found or Data Unavailable. Try adding .NS")
+                st.error("❌ Ticker Not Found or Data Error.")
