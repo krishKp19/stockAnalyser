@@ -3,17 +3,18 @@ import google.generativeai as genai
 import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
     /* Clean up the top padding */
-    .block-container {
-        padding-top: 2rem;
-    }
+    .block-container { padding-top: 2rem; }
+    
     /* Metric Card Styling */
     [data-testid="stMetricValue"] {
         font-size: 24px;
@@ -22,6 +23,16 @@ st.markdown("""
     [data-testid="stMetricLabel"] {
         font-size: 14px;
         color: #888888;
+    }
+    
+    /* Custom Badge for Sector */
+    .sector-badge {
+        background-color: #333;
+        color: #00FF00;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -34,7 +45,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Model Selector
     if api_key:
         try:
             genai.configure(api_key=api_key)
@@ -49,39 +59,98 @@ with st.sidebar:
     st.divider()
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
 
+# --- HELPER: SECTOR CONTEXT LOGIC [Phase 4] ---
+def get_sector_context(info):
+    sector = info.get('sector', 'Unknown')
+    industry = info.get('industry', 'Unknown')
+    
+    # Map yfinance sectors to Document Phase 4 Metrics 
+    context_map = {
+        "Financial Services": "BANKING/FINANCE: Focus on NIM (>3.5%) and NPA trends. Ignore D/E ratio.",
+        "Technology": "IT/SAAS: Focus on Deal Wins (TCV) and Attrition rates. PEG is key.",
+        "Consumer Cyclical": "RETAIL/AUTO: Focus on Same Store Sales (SSSG) or EBITDA Margins (>12%).",
+        "Basic Materials": "COMMODITIES: Cyclical Sector. Focus on Capacity Utilization >85% and EV/EBITDA. Ignore PEG.",
+        "Utilities": "POWER/INFRA: Focus on Plant Load Factor (PLF >75%) and Order Book Execution.",
+        "Healthcare": "PHARMA: Focus on USFDA Status and R&D Spend.",
+        "Energy": "OIL/GAS: Highly Cyclical. Watch Crude Oil prices and GRMs."
+    }
+    
+    # Logic to identify Cyclicals for Phase 3 
+    is_cyclical = any(x in sector for x in ['Basic Materials', 'Energy', 'Utilities', 'Industrials', 'Real Estate'])
+    
+    sector_advice = context_map.get(sector, f"General Sector: {sector}. Focus on Cash Flow and Margins.")
+    
+    return {
+        "Sector": sector,
+        "Industry": industry,
+        "Advice": sector_advice,
+        "Is_Cyclical": is_cyclical
+    }
+
+# --- HELPER: CHARTING ENGINE [Phase 5] ---
+def plot_technical_chart(hist, ticker):
+    # Visualize Price + Volume for Breakouts 
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.03, subplot_titles=(f'{ticker} Price Action', 'Volume Profile'), 
+                        row_heights=[0.7, 0.3])
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'],
+                                 low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
+    
+    # SMAs [cite: 84]
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange', width=1), name='50 DMA'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue', width=2), name='200 DMA'), row=1, col=1)
+
+    # Volume (Color coded)
+    colors = ['#00FF00' if row['Open'] - row['Close'] >= 0 else '#FF0000' for index, row in hist.iterrows()]
+    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
+
+    fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark",
+                      paper_bgcolor="#0e1117", plot_bgcolor="#0e1117", 
+                      font=dict(color="white"))
+    return fig
+
 # --- DATA ENGINE ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        
-        # 1. Fetch History
         hist = stock.history(period="2y")
-        if hist.empty: return None
+        if hist.empty: return None, None
         
-        # 2. Benchmark for Relative Strength (RS)
+        info = stock.info
+        
+        # 1. Benchmark for Relative Strength [cite: 97]
         benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
         try:
             bench = yf.Ticker(benchmark_symbol)
             bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
-            
             if len(hist) > 126 and len(bench_hist) > 126:
-                stock_6m_ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
-                bench_6m_ret = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
-                rs_value = (stock_6m_ret - bench_6m_ret) * 100
-                rs_metric = f"{rs_value:+.2f}%" # FIX: Removed "vs Market" to prevent spillover
+                stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
+                bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
+                rs_value = (stock_6m - bench_6m) * 100
+                rs_metric = f"{rs_value:+.2f}%"
             else:
                 rs_metric = "N/A"
         except:
             rs_metric = "N/A"
 
-        # 3. Technical Indicators
+        # 2. Technicals
         hist['RSI'] = ta.rsi(hist['Close'], length=14)
         hist['SMA_50'] = ta.sma(hist['Close'], length=50)
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
-        
         latest = hist.iloc[-1]
-        info = stock.info
+        
+        # 3. News for Sentiment [Phase 6]
+        try:
+            news = stock.news
+            news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
+        except:
+            news_headlines = ["News data unavailable."]
+
+        # 4. Sector Context [Phase 4]
+        sector_ctx = get_sector_context(info)
         
         def safe_fmt(val, is_percent=False):
             if val is None or val == "N/A": return "N/A"
@@ -89,15 +158,18 @@ def get_market_data(ticker):
                 if is_percent: return f"{val * 100:.2f}%"
                 return f"{val:.2f}"
             return val
+            
+        # D/E Logic Fix
+        de_ratio = info.get('debtToEquity', None)
+        if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
 
-        # Metric Dictionary
         metrics = {
             "Symbol": ticker,
             "Price": f"{latest['Close']:.2f}",
             "Market Cap": info.get('marketCap', 'N/A'),
             
             # Fundamentals
-            "D/E Ratio": safe_fmt(info.get('debtToEquity', None), is_percent=False),
+            "D/E Ratio": safe_fmt(de_ratio),
             "Current Ratio": safe_fmt(info.get('currentRatio', None)),
             "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
             "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
@@ -114,57 +186,66 @@ def get_market_data(ticker):
             "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
             
             "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
+            
+            # Context Extras
+            "Sector_Info": sector_ctx,
+            "News_Headlines": news_headlines
         }
         
-        # D/E Logic Fix
-        if metrics["D/E Ratio"] != "N/A" and float(metrics["D/E Ratio"]) > 10: 
-             metrics["D/E Ratio"] = f"{float(metrics['D/E Ratio']) / 100:.2f}"
-
-        return metrics
+        return metrics, hist
     except Exception as e:
-        return None
+        return None, None
 
 # --- AI ENGINE ---
 def analyze_stock(api_key, model_name, data):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
     
+    # Valuation Logic for Phase 3 
+    val_focus = "EV/EBITDA (Cyclical Industry)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth Industry)"
+    
     prompt = f"""
     Act as a Hedge Fund Manager. Audit {data['Symbol']} using this strict 7-PHASE FRAMEWORK.
+    
+    ### SECTOR CONTEXT [Phase 4]:
+    {data['Sector_Info']['Advice']}
     
     ### DATA INPUTS:
     {data}
     
+    ### NEWS HEADLINES (For Phase 6 Sentiment):
+    {data['News_Headlines']}
+    
     ### FRAMEWORK INSTRUCTIONS:
+    
     **Phase 1: Safety Filter**
-    - Debt/Equity: {data['D/E Ratio']} (Target < 1.0).
+    - Debt/Equity: {data['D/E Ratio']} (Target < 1.0, ignored for Banks).
     - Current Ratio: {data['Current Ratio']} (Target > 1.5).
-    - *Verdict on Financial Health.*
     
     **Phase 2: Profit Engine**
     - ROE: {data['ROE']} (Target > 15%).
     - Growth: Rev {data['Rev Growth']} | Profit {data['Profit Growth']}.
-    - *Verdict on Quality.*
     
-    **Phase 3: Valuation (The Price)**
-    - EV/EBITDA: {data['EV/EBITDA']} (Target < 10 for Mfg).
-    - P/E: {data['P/E']} vs PEG: {data['PEG']}.
-    - *Is it Overvalued?*
+    **Phase 3: Valuation (Context Aware)**
+    - **Primary Focus:** {val_focus}
+    - P/E: {data['P/E']} | PEG: {data['PEG']} | EV/EBITDA: {data['EV/EBITDA']}.
+    - Verdict: Undervalued or Trap?
     
-    **Phase 4: Sector Check**
-    - Identify sector based on ticker. Mention 1 specific metric relevant to this sector (e.g. NIM for Banks, Same Store Sales for Retail) user should check.
+    **Phase 4: Sector Nuances**
+    - Based on the "Sector Context" provided above, comment on the specific metric (e.g. NIM, PLF, Order Book) that needs checking.
     
     **Phase 5: Technical Entry**
-    - Trend: {data['Trend']} (Price vs 200 DMA).
-    - Relative Strength (RS): {data['RS_Rating']} (Positive = Leader).
+    - Trend: {data['Trend']}.
+    - Relative Strength: {data['RS_Rating']} (Positive = Leader).
     - RSI: {data['RSI']} (40-60 Entry Zone).
-    - *Timing Verdict.*
+    - *Verdict: Buy / Wait?*
     
-    **Phase 6: Smart Money**
-    - Inst Holding: {data['Inst Hold']}. High is good.
+    **Phase 6: Management & Sentiment**
+    - Inst Holding: {data['Inst Hold']}.
+    - **News Sentiment:** Analyze the provided headlines for "Corporate Speak" or governance risks.
     
     **Phase 7: Exit Risks**
-    - List 2 major risks.
+    - List 2 major risks (Regulatory, Macro, etc).
     
     ### FINAL OUTPUT:
     # 🎯 INVESTMENT VERDICT: [BUY / ACCUMULATE / WATCH / SELL]
@@ -175,13 +256,10 @@ def analyze_stock(api_key, model_name, data):
     return response.text
 
 # --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal (v2.0)")
+st.title("📈 AI Hedge Fund Terminal (v3.0)")
 
-# FIX: Center Button Layout
 with st.form("run_form"):
     ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
-    
-    # Create 3 columns, put button in the middle one to center it
     c1, c2, c3 = st.columns([1, 1, 1])
     with c2:
         submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
@@ -190,29 +268,33 @@ if submitted:
     if not api_key:
         st.error("⚠️ Enter API Key in Sidebar")
     else:
-        with st.spinner(f"Fetching Data & Analyzing {ticker}..."):
-            data = get_market_data(ticker)
+        with st.spinner(f"Analyzing {ticker} [Sector Logic + News + Charts]..."):
+            data, hist = get_market_data(ticker)
             
-            if data:
-                # --- SECTION 1: BOLD METRICS DASHBOARD ---
-                st.subheader("📊 Key Metrics")
+            if data and hist is not None:
+                # --- SECTION 1: METRICS HUD ---
+                st.subheader(f"📊 {ticker} Dashboard")
+                st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
                 
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("EV / EBITDA", data['EV/EBITDA'], help="Target < 10")
+                m1.metric("EV / EBITDA", data['EV/EBITDA'], help="Target < 10 (Cyclicals)")
                 m2.metric("P/E Ratio", data['P/E'])
                 m3.metric("Debt / Equity", data['D/E Ratio'], help="Target < 1.0")
                 m4.metric("Current Ratio", data['Current Ratio'], help="Target > 1.5")
                 
-                st.divider()
-                
                 t1, t2, t3, t4 = st.columns(4)
                 t1.metric("ROE", data['ROE'], help="Target > 15%")
-                # FIX: Renamed label to include context, kept value short
-                t2.metric("Rel. Strength (vs Mkt)", data['RS_Rating'], help="vs Benchmark (6 Months)")
+                t2.metric("Rel. Strength", data['RS_Rating'], help="vs Benchmark (6M)")
                 t3.metric("RSI (14)", data['RSI'], help="30-70 Range")
-                t4.metric("Trend (200 DMA)", data['Trend'])
+                t4.metric("Trend", data['Trend'])
                 
-                # --- SECTION 2: AI REPORT ---
+                st.divider()
+                
+                # --- SECTION 2: CHARTING (Phase 5 Visuals) ---
+                st.subheader("📉 Technical Breakout Check")
+                st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
+                
+                # --- SECTION 3: AI REPORT ---
                 st.divider()
                 st.subheader("📝 Forensic Analysis")
                 try:
