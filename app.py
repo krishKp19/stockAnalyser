@@ -4,7 +4,6 @@ import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
 # NOTE: Plotly is removed from top-level imports to prevent "White Screen" crashes.
-# It is now imported inside the plotting function (Lazy Loading).
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
@@ -26,31 +25,27 @@ with st.sidebar:
     st.markdown("[Get Free Key](https://aistudio.google.com/)")
     st.divider()
     
-    # --- MODEL SELECTOR FIX ---
-    # Default options in case connection fails
+    # --- MODEL SELECTOR ---
     fallback_models = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
     
     if api_key:
         try:
             genai.configure(api_key=api_key)
-            # Try to fetch actual models
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             gemini_models = [m for m in models if 'gemini' in m]
             if not gemini_models: 
                 gemini_models = fallback_models
         except:
-            # If connection fails, show fallback list instead of hiding the box
             gemini_models = fallback_models
             
         selected_model = st.selectbox("AI Brain", gemini_models, index=0)
     else:
-        # Show disabled box if no key
         st.selectbox("AI Brain", ["Enter Key First"], disabled=True)
 
     st.divider()
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
 
-# --- HELPER: SECTOR CONTEXT LOGIC [Phase 4] ---
+# --- HELPER: SECTOR CONTEXT LOGIC ---
 def get_sector_context(info):
     sector = info.get('sector', 'Unknown')
     industry = info.get('industry', 'Unknown')
@@ -75,9 +70,8 @@ def get_sector_context(info):
         "Is_Cyclical": is_cyclical
     }
 
-# --- HELPER: LAZY CHARTING ENGINE [Phase 5] ---
+# --- HELPER: LAZY CHARTING ENGINE ---
 def plot_technical_chart(hist, ticker):
-    # IMPORT HERE to prevent White Screen Crash on load
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -180,6 +174,7 @@ def analyze_stock(api_key, model_name, data):
     
     val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
     
+    # ADDED: Specific instruction to include the framework header
     prompt = f"""
     Act as a Hedge Fund Manager. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
     
@@ -197,14 +192,18 @@ def analyze_stock(api_key, model_name, data):
     7. Risks: List 2 key risks.
     
     OUTPUT:
+    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
+    
     # 🎯 VERDICT: [BUY / WATCH / SELL]
     **Reason:** (One sentence summary).
+    
+    (Then continue with the 7 numbered points)
     """
     response = model.generate_content(prompt)
     return response.text
 
 # --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal (v3.1)")
+st.title("📈 AI Hedge Fund Terminal (v3.2)")
 
 with st.form("run_form"):
     ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
