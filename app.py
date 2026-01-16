@@ -10,17 +10,19 @@ st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #0e1117;
-        border: 1px solid #333;
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
+    /* Clean up the top padding */
+    .block-container {
+        padding-top: 2rem;
     }
-    .metric-label { font-size: 14px; color: #888; margin-bottom: 5px; }
-    .metric-value { font-size: 24px; font-weight: bold; color: #fff; }
-    .metric-trend-up { color: #00FF00; font-size: 14px; }
-    .metric-trend-down { color: #FF0000; font-size: 14px; }
+    /* Metric Card Styling */
+    [data-testid="stMetricValue"] {
+        font-size: 24px;
+        color: #ffffff;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 14px;
+        color: #888888;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,25 +55,23 @@ def get_market_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         
-        # 1. Fetch History (2 Years for 200 DMA)
+        # 1. Fetch History
         hist = stock.history(period="2y")
         if hist.empty: return None
         
         # 2. Benchmark for Relative Strength (RS)
-        # If Indian stock, compare with Nifty 50 (^NSEI), else S&P 500 (^GSPC)
         benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
         try:
             bench = yf.Ticker(benchmark_symbol)
             bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
             
-            # Calculate 6-Month Return (approx 126 trading days)
             if len(hist) > 126 and len(bench_hist) > 126:
                 stock_6m_ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
                 bench_6m_ret = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
-                rs_value = (stock_6m_ret - bench_6m_ret) * 100 # Outperformance %
-                rs_metric = f"{rs_value:+.2f}% vs Market"
+                rs_value = (stock_6m_ret - bench_6m_ret) * 100
+                rs_metric = f"{rs_value:+.2f}%" # FIX: Removed "vs Market" to prevent spillover
             else:
-                rs_metric = "N/A (New Listing)"
+                rs_metric = "N/A"
         except:
             rs_metric = "N/A"
 
@@ -81,8 +81,6 @@ def get_market_data(ticker):
         hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
         latest = hist.iloc[-1]
-        
-        # 4. Fundamental Metrics (From Info)
         info = stock.info
         
         def safe_fmt(val, is_percent=False):
@@ -98,37 +96,28 @@ def get_market_data(ticker):
             "Price": f"{latest['Close']:.2f}",
             "Market Cap": info.get('marketCap', 'N/A'),
             
-            # Phase 1: Safety
-            "D/E Ratio": safe_fmt(info.get('debtToEquity', None), is_percent=False), # yf returns this as ratio often, check logic
+            # Fundamentals
+            "D/E Ratio": safe_fmt(info.get('debtToEquity', None), is_percent=False),
             "Current Ratio": safe_fmt(info.get('currentRatio', None)),
-            "Pledged %": "Check Manually", # yf often misses this for India
-            
-            # Phase 2: Profit
             "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
             "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
             "Profit Growth": safe_fmt(info.get('earningsGrowth', None), is_percent=True),
-            "Margins": safe_fmt(info.get('operatingMargins', None), is_percent=True),
-            
-            # Phase 3: Valuation
             "P/E": safe_fmt(info.get('trailingPE', None)),
             "PEG": safe_fmt(info.get('pegRatio', None)),
             "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
             
-            # Phase 4: Technicals
+            # Technicals
             "RSI": f"{latest['RSI']:.2f}",
             "RS_Rating": rs_metric,
             "50 DMA": f"{latest['SMA_50']:.2f}",
             "200 DMA": f"{latest['SMA_200']:.2f}",
             "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
             
-            # Phase 6: Management
             "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
-            "Promoter Hold": safe_fmt(info.get('heldPercentInsiders', None), is_percent=True)
         }
         
-        # Correction: YF usually returns debtToEquity as a whole number (e.g. 120 for 1.2), checking logic
+        # D/E Logic Fix
         if metrics["D/E Ratio"] != "N/A" and float(metrics["D/E Ratio"]) > 10: 
-             # If it's > 10, it's likely percentage (e.g. 54.3%), convert to ratio 0.54
              metrics["D/E Ratio"] = f"{float(metrics['D/E Ratio']) / 100:.2f}"
 
         return metrics
@@ -147,7 +136,6 @@ def analyze_stock(api_key, model_name, data):
     {data}
     
     ### FRAMEWORK INSTRUCTIONS:
-    
     **Phase 1: Safety Filter**
     - Debt/Equity: {data['D/E Ratio']} (Target < 1.0).
     - Current Ratio: {data['Current Ratio']} (Target > 1.5).
@@ -159,16 +147,16 @@ def analyze_stock(api_key, model_name, data):
     - *Verdict on Quality.*
     
     **Phase 3: Valuation (The Price)**
-    - EV/EBITDA: {data['EV/EBITDA']} (Target < 10 for Mfg, higher for others).
+    - EV/EBITDA: {data['EV/EBITDA']} (Target < 10 for Mfg).
     - P/E: {data['P/E']} vs PEG: {data['PEG']}.
     - *Is it Overvalued?*
     
     **Phase 4: Sector Check**
-    - Identify the sector based on the ticker. Mention 1 specific metric relevant to this sector (e.g. NIM for Banks, Same Store Sales for Retail) that user should check.
+    - Identify sector based on ticker. Mention 1 specific metric relevant to this sector (e.g. NIM for Banks, Same Store Sales for Retail) user should check.
     
     **Phase 5: Technical Entry**
     - Trend: {data['Trend']} (Price vs 200 DMA).
-    - Relative Strength (RS): {data['RS_Rating']} (Positive = Leader, Negative = Laggard).
+    - Relative Strength (RS): {data['RS_Rating']} (Positive = Leader).
     - RSI: {data['RSI']} (40-60 Entry Zone).
     - *Timing Verdict.*
     
@@ -189,13 +177,14 @@ def analyze_stock(api_key, model_name, data):
 # --- MAIN UI ---
 st.title("📈 AI Hedge Fund Terminal (v2.0)")
 
-# Form to prevent reloading
+# FIX: Center Button Layout
 with st.form("run_form"):
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
-    with col2:
-        submitted = st.form_submit_button("🚀 Run Analysis")
+    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
+    
+    # Create 3 columns, put button in the middle one to center it
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
+        submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
 
 if submitted:
     if not api_key:
@@ -208,19 +197,18 @@ if submitted:
                 # --- SECTION 1: BOLD METRICS DASHBOARD ---
                 st.subheader("📊 Key Metrics")
                 
-                # Row 1: Valuation & Safety
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("EV / EBITDA", data['EV/EBITDA'], help="Target < 10 (Indus/Mfg)")
+                m1.metric("EV / EBITDA", data['EV/EBITDA'], help="Target < 10")
                 m2.metric("P/E Ratio", data['P/E'])
                 m3.metric("Debt / Equity", data['D/E Ratio'], help="Target < 1.0")
                 m4.metric("Current Ratio", data['Current Ratio'], help="Target > 1.5")
                 
                 st.divider()
                 
-                # Row 2: Growth & Technicals
                 t1, t2, t3, t4 = st.columns(4)
                 t1.metric("ROE", data['ROE'], help="Target > 15%")
-                t2.metric("Relative Strength (6M)", data['RS_Rating'], help="vs Benchmark")
+                # FIX: Renamed label to include context, kept value short
+                t2.metric("Rel. Strength (vs Mkt)", data['RS_Rating'], help="vs Benchmark (6 Months)")
                 t3.metric("RSI (14)", data['RSI'], help="30-70 Range")
                 t4.metric("Trend (200 DMA)", data['Trend'])
                 
