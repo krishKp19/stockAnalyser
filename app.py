@@ -3,7 +3,7 @@ import google.generativeai as genai
 import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
-# NOTE: Plotly is imported inside functions to prevent memory crashes on free tier.
+import requests # Needed for Stealth Mode
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
@@ -93,16 +93,24 @@ def plot_technical_chart(hist, ticker):
                       font=dict(color="white"), margin=dict(l=10, r=10, t=30, b=10))
     return fig
 
-# --- DATA ENGINE (ROBUST VERSION) ---
+# --- DATA ENGINE (STEALTH MODE) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        # Fetch 2 years to calculate 200 DMA accurately
+        # STEALTH MODE: Create a fake browser session
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        
+        # Pass the session to yfinance to bypass bot detection
+        stock = yf.Ticker(ticker, session=session)
+        
+        # Fetch 2 years
         hist = stock.history(period="2y")
         
         if hist.empty:
-            st.error(f"❌ Data Error: Yahoo Finance returned no data for '{ticker}'. Check if the ticker is correct (e.g. use .NS for India).")
+            st.error(f"❌ Rate Limit or Empty Data: Yahoo is blocking requests for '{ticker}'. Try again in 1 minute.")
             return None, None
         
         info = stock.info
@@ -110,7 +118,7 @@ def get_market_data(ticker):
         # 1. Benchmark for RS
         benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
         try:
-            bench = yf.Ticker(benchmark_symbol)
+            bench = yf.Ticker(benchmark_symbol, session=session) # Use session here too
             bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
             if len(hist) > 126 and len(bench_hist) > 126:
                 stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
@@ -169,7 +177,7 @@ def get_market_data(ticker):
         }
         return metrics, hist
     except Exception as e:
-        st.error(f"❌ Critical Error: {e}")
+        st.error(f"❌ Connection Error: {e}")
         return None, None
 
 # --- AI ENGINE ---
@@ -207,7 +215,7 @@ def analyze_stock(api_key, model_name, data):
     return response.text
 
 # --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal (v3.3)")
+st.title("📈 AI Hedge Fund Terminal (v3.4)")
 
 with st.form("run_form"):
     ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
@@ -219,7 +227,7 @@ if submitted:
     if not api_key:
         st.error("⚠️ Enter API Key in Sidebar")
     else:
-        with st.spinner(f"Analyzing {ticker}..."):
+        with st.spinner(f"Analyzing {ticker} (Stealth Mode Active)..."):
             data, hist = get_market_data(ticker)
             
             if data and hist is not None:
