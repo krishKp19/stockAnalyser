@@ -3,7 +3,7 @@ import google.generativeai as genai
 import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
-# NOTE: Plotly is removed from top-level imports to prevent "White Screen" crashes
+# NOTE: Plotly is imported inside functions to prevent memory crashes on free tier.
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
@@ -14,7 +14,7 @@ st.markdown("""
     .block-container { padding-top: 2rem; }
     [data-testid="stMetricValue"] { font-size: 24px; color: #ffffff; }
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
-    .sector-badge { background-color: #333; color: #00FF00; padding: 4px 8px; border-radius: 4px; }
+    .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,13 +93,17 @@ def plot_technical_chart(hist, ticker):
                       font=dict(color="white"), margin=dict(l=10, r=10, t=30, b=10))
     return fig
 
-# --- DATA ENGINE ---
+# --- DATA ENGINE (ROBUST VERSION) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     try:
         stock = yf.Ticker(ticker)
+        # Fetch 2 years to calculate 200 DMA accurately
         hist = stock.history(period="2y")
-        if hist.empty: return None, None
+        
+        if hist.empty:
+            st.error(f"❌ Data Error: Yahoo Finance returned no data for '{ticker}'. Check if the ticker is correct (e.g. use .NS for India).")
+            return None, None
         
         info = stock.info
         
@@ -164,7 +168,8 @@ def get_market_data(ticker):
             "News_Headlines": news_headlines
         }
         return metrics, hist
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ Critical Error: {e}")
         return None, None
 
 # --- AI ENGINE ---
@@ -174,21 +179,20 @@ def analyze_stock(api_key, model_name, data):
     
     val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
     
-    # ADDED: Specific instruction to include the framework header
     prompt = f"""
-    Act as a Hedge Fund Manager. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
+    Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
     
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
-    NEWS: {data['News_Headlines']}
+    NEWS SENTIMENT: {data['News_Headlines']}
     DATA: {data}
     
     FRAMEWORK:
     1. Safety: Debt/Equity {data['D/E Ratio']} (<1.0?), Current Ratio {data['Current Ratio']} (>1.5?).
     2. Profit: ROE {data['ROE']} (>15?), Growth {data['Profit Growth']}.
     3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
-    4. Sector: Comment on specific sector metrics.
+    4. Sector: Comment on specific sector metrics mentioned in context.
     5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}, Relative Strength {data['RS_Rating']}.
-    6. Management: Inst Hold {data['Inst Hold']}, News Sentiment.
+    6. Management: Inst Hold {data['Inst Hold']}, News Sentiment Check.
     7. Risks: List 2 key risks.
     
     OUTPUT:
@@ -197,13 +201,13 @@ def analyze_stock(api_key, model_name, data):
     # 🎯 VERDICT: [BUY / WATCH / SELL]
     **Reason:** (One sentence summary).
     
-    (Then continue with the 7 numbered points)
+    (Then continue with the 7 numbered points in detail)
     """
     response = model.generate_content(prompt)
     return response.text
 
 # --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal (v3.2)")
+st.title("📈 AI Hedge Fund Terminal (v3.3)")
 
 with st.form("run_form"):
     ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
@@ -249,5 +253,3 @@ if submitted:
                     st.markdown(report)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
-            else:
-                st.error("❌ Ticker Not Found or Data Unavailable")
