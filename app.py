@@ -3,7 +3,7 @@ import google.generativeai as genai
 import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
-# NOTE: Plotly is removed from top-level imports to prevent "White Screen" crashes.
+# NOTE: Plotly is removed from top-level imports to prevent "White Screen" crashes
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
