@@ -1,9 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
-from yahooquery import Ticker
+import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
-# Plotly imported lazily
+import numpy as np
+from datetime import datetime, timedelta
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
@@ -15,6 +16,7 @@ st.markdown("""
     [data-testid="stMetricValue"] { font-size: 24px; color: #ffffff; }
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
     .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
+    .demo-badge { background-color: #FFA500; color: black; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,23 +47,20 @@ with st.sidebar:
 def get_sector_context(info):
     sector = info.get('sector', 'Unknown')
     industry = info.get('industry', 'Unknown')
-    
     context_map = {
-        "Financial Services": "BANKING: Focus on NIM (>3.5%) and NPA trends. Ignore D/E.",
-        "Technology": "IT: Focus on Deal Wins (TCV) and Attrition. PEG is key.",
-        "Consumer Cyclical": "RETAIL/AUTO: Focus on Same Store Sales (SSSG) or EBITDA Margins.",
-        "Basic Materials": "COMMODITIES: Cyclical. Focus on Capacity Utilization >85% and EV/EBITDA.",
+        "Financial Services": "BANKING: Focus on NIM (>3.5%) and NPA trends.",
+        "Technology": "IT: Focus on Deal Wins (TCV) and Attrition.",
+        "Consumer Cyclical": "RETAIL/AUTO: Focus on Same Store Sales (SSSG).",
+        "Basic Materials": "COMMODITIES: Focus on Capacity Utilization >85%.",
         "Utilities": "POWER: Focus on Plant Load Factor (PLF >75%).",
-        "Healthcare": "PHARMA: Focus on USFDA Status and R&D Spend.",
-        "Energy": "OIL/GAS: Watch Crude Oil prices and GRMs."
+        "Healthcare": "PHARMA: Focus on USFDA Status.",
+        "Energy": "OIL/GAS: Watch Crude Oil prices."
     }
-    
     is_cyclical = any(x in sector for x in ['Basic Materials', 'Energy', 'Utilities', 'Industrials'])
     sector_advice = context_map.get(sector, f"General Sector: {sector}. Focus on Cash Flow.")
-    
     return {"Sector": sector, "Industry": industry, "Advice": sector_advice, "Is_Cyclical": is_cyclical}
 
-# --- HELPER: CHARTING ---
+# --- HELPER: LAZY CHARTING ---
 def plot_technical_chart(hist, ticker):
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
@@ -84,52 +83,100 @@ def plot_technical_chart(hist, ticker):
                       font=dict(color="white"), margin=dict(l=10, r=10, t=30, b=10))
     return fig
 
-# --- DATA ENGINE (YAHOOQUERY REPLACEMENT) ---
+# --- MOCK DATA GENERATOR (THE SAVIOR) ---
+def generate_mock_data(ticker):
+    """Generates realistic dummy data when Yahoo blocks the IP."""
+    dates = pd.date_range(end=datetime.today(), periods=500)
+    
+    # Create a random walk for price
+    base_price = 400.0
+    returns = np.random.normal(0, 0.02, 500)
+    price_path = base_price * (1 + returns).cumprod()
+    
+    hist = pd.DataFrame(index=dates)
+    hist['Close'] = price_path
+    hist['Open'] = price_path * (1 + np.random.normal(0, 0.005, 500))
+    hist['High'] = hist[['Open', 'Close']].max(axis=1) * (1 + np.abs(np.random.normal(0, 0.005, 500)))
+    hist['Low'] = hist[['Open', 'Close']].min(axis=1) * (1 - np.abs(np.random.normal(0, 0.005, 500)))
+    hist['Volume'] = np.random.randint(100000, 5000000, 500)
+    
+    # Add Mock Technicals
+    hist['RSI'] = ta.rsi(hist['Close'], length=14).fillna(50)
+    hist['SMA_50'] = ta.sma(hist['Close'], length=50).fillna(base_price)
+    hist['SMA_200'] = ta.sma(hist['Close'], length=200).fillna(base_price)
+    
+    # Mock Info Dict
+    info = {
+        'sector': 'Basic Materials (Simulated)',
+        'industry': 'Other Industrial Metals',
+        'marketCap': 50000000000,
+        'debtToEquity': 85.5,
+        'currentRatio': 1.8,
+        'returnOnEquity': 0.18,
+        'revenueGrowth': 0.12,
+        'earningsGrowth': 0.15,
+        'trailingPE': 12.5,
+        'pegRatio': 0.9,
+        'enterpriseToEbitda': 6.5,
+        'heldPercentInstitutions': 0.35
+    }
+    
+    return info, hist
+
+# --- DATA ENGINE (HYBRID) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
+    is_live = True
     try:
-        # 1. Fetch Data using YahooQuery (More robust than YFinance)
-        yq = Ticker(ticker)
+        # 1. Try Live Fetch
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="2y")
         
-        # Get History (Returns MultiIndex, need to flatten)
-        hist = yq.history(period='2y')
-        
-        if isinstance(hist, dict) or hist.empty:
-            st.error(f"❌ Data Error: No history found for '{ticker}'.")
-            return None, None
+        if hist.empty:
+            raise ValueError("Empty Data")
             
-        # Fix Data Structure (Reset index, rename cols to match YFinance format)
-        hist = hist.reset_index()
-        hist.set_index('date', inplace=True)
-        hist.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+        info = stock.info
+        # If info is empty (common block symptom), raise error to trigger mock
+        if len(info) < 2: 
+            raise ValueError("Blocked Info")
+            
+    except Exception:
+        # 2. FALLBACK TO MOCK DATA
+        is_live = False
+        info, hist = generate_mock_data(ticker)
+
+    # --- PROCESS DATA (Common for both Live & Mock) ---
+    try:
+        # Technicals (If live, calc them; if mock, they are already there)
+        if is_live:
+            hist['RSI'] = ta.rsi(hist['Close'], length=14)
+            hist['SMA_50'] = ta.sma(hist['Close'], length=50)
+            hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         
-        # 2. Fetch Info (YahooQuery splits this into modules)
-        modules = 'assetProfile summaryDetail financialData defaultKeyStatistics earnings'
-        all_modules = yq.get_modules(modules)
-        
-        # Merge modules into one 'info' dictionary
-        info = {}
-        if isinstance(all_modules, dict) and ticker in all_modules:
-            data_root = all_modules[ticker]
-            if isinstance(data_root, str): # Error message returned
-                st.error(f"❌ API Error: {data_root}")
-                return None, None
-                
-            # Flatten the dictionaries
-            for key in ['assetProfile', 'summaryDetail', 'financialData', 'defaultKeyStatistics']:
-                if key in data_root:
-                    info.update(data_root[key])
-        
-        # 3. Calculate Technicals
-        hist['RSI'] = ta.rsi(hist['Close'], length=14)
-        hist['SMA_50'] = ta.sma(hist['Close'], length=50)
-        hist['SMA_200'] = ta.sma(hist['Close'], length=200)
         latest = hist.iloc[-1]
         
-        # 4. News (YahooQuery doesn't fetch news easily, we'll skip or mock it)
-        news_headlines = ["News data unavailable in this mode."] 
+        # Benchmark RS (Only if live)
+        rs_metric = "N/A (Mode: Sim)"
+        if is_live:
+            try:
+                benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
+                bench = yf.Ticker(benchmark_symbol)
+                bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
+                if len(hist) > 126 and len(bench_hist) > 126:
+                    stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
+                    bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
+                    rs_value = (stock_6m - bench_6m) * 100
+                    rs_metric = f"{rs_value:+.2f}%"
+            except: pass
 
-        # 5. Context
+        # News
+        news_headlines = ["Live news unavailable in Simulation Mode."]
+        if is_live:
+            try:
+                news = stock.news
+                news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
+            except: pass
+
         sector_ctx = get_sector_context(info)
         
         def safe_fmt(val, is_percent=False):
@@ -155,16 +202,15 @@ def get_market_data(ticker):
             "PEG": safe_fmt(info.get('pegRatio', None)),
             "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
             "RSI": f"{latest['RSI']:.2f}",
-            "RS_Rating": "N/A", # Hard to calc RS with YahooQuery efficiently
+            "RS_Rating": rs_metric,
             "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
             "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
             "Sector_Info": sector_ctx,
-            "News_Headlines": news_headlines
+            "News_Headlines": news_headlines,
+            "Is_Live": is_live
         }
         return metrics, hist
-        
     except Exception as e:
-        st.error(f"❌ Connection Error: {e}")
         return None, None
 
 # --- AI ENGINE ---
@@ -175,6 +221,7 @@ def analyze_stock(api_key, model_name, data):
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
+    DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     DATA: {data}
     
@@ -197,7 +244,8 @@ def analyze_stock(api_key, model_name, data):
     return response.text
 
 # --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal (v4.0 - Cloud Stable)")
+st.title("📈 AI Hedge Fund Terminal")
+st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
 
 with st.form("run_form"):
     ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
@@ -209,9 +257,17 @@ if submitted:
     if not api_key:
         st.error("⚠️ Enter API Key")
     else:
-        with st.spinner(f"Analyzing {ticker} (via YahooQuery)..."):
+        with st.spinner(f"Analyzing {ticker}..."):
             data, hist = get_market_data(ticker)
+            
             if data and hist is not None:
+                # Mode Banner
+                if not data['Is_Live']:
+                    st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
+                else:
+                    st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
+
+                # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
                 st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
                 
