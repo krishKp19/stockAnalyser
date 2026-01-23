@@ -208,4 +208,113 @@ def get_market_data(ticker):
             "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
             "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
             "Profit Growth": safe_fmt(info.get('earningsGrowth', None), is_percent=True),
-            "P/E":
+            "P/E": safe_fmt(info.get('trailingPE', None)),
+            "PEG": safe_fmt(info.get('pegRatio', None)),
+            "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
+            "RSI": f"{latest['RSI']:.2f}",
+            "RS_Rating": rs_metric,
+            "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
+            "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
+            "Sector_Info": sector_ctx,
+            "News_Headlines": news_headlines,
+            "Is_Live": is_live,
+            "CFO": safe_fmt(cfo),
+            "EBITDA": safe_fmt(ebitda),
+            "CFO_to_EBITDA": cfo_to_ebitda
+        }
+        return metrics, hist
+    except Exception as e:
+        return None, None
+
+# --- AI ENGINE ---
+def analyze_stock(api_key, model_name, data):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+    val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
+    
+    prompt = f"""
+    Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
+    DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
+    SECTOR CONTEXT: {data['Sector_Info']['Advice']}
+    DATA: {data}
+    
+    IMPORTANT: Evaluate the Earnings Quality based on CFO ({data['CFO']}) vs EBITDA ({data['EBITDA']}).
+    If CFO is significantly lower than EBITDA, determine if this is due to Sector Norms or a potential red flag.
+    
+    FRAMEWORK:
+    1. Safety: Debt/Equity {data['D/E Ratio']}, Current Ratio {data['Current Ratio']}.
+    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}.
+    3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
+    4. Sector: Comment on sector metrics.
+    5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}.
+    6. Management: Inst Hold {data['Inst Hold']}.
+    7. Risks: List 2 key risks.
+    
+    OUTPUT:
+    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
+    # 🎯 VERDICT: [BUY / WATCH / SELL]
+    **Reason:** (One sentence summary).
+    (Continue with 7 numbered points)
+    """
+    response = model.generate_content(prompt)
+    return response.text
+
+# --- MAIN UI ---
+st.title("📈 AI Hedge Fund Terminal")
+st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
+
+with st.form("run_form"):
+    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
+        submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
+
+if submitted:
+    if not api_key:
+        st.error("⚠️ Enter API Key")
+    else:
+        with st.spinner(f"Analyzing {ticker}..."):
+            data, hist = get_market_data(ticker)
+            
+            if data and hist is not None:
+                # Mode Banner
+                if not data['Is_Live']:
+                    st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
+                else:
+                    st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
+
+                # DASHBOARD
+                st.subheader(f"📊 {ticker} Dashboard")
+                st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("EV / EBITDA", data['EV/EBITDA'])
+                m2.metric("P/E Ratio", data['P/E'])
+                m3.metric("Debt / Equity", data['D/E Ratio'])
+                m4.metric("Current Ratio", data['Current Ratio'])
+                
+                t1, t2, t3, t4 = st.columns(4)
+                t1.metric("ROE", data['ROE'])
+                t2.metric("PEG Ratio", data['PEG'])
+                t3.metric("RSI (14)", data['RSI'])
+                t4.metric("Trend", data['Trend'])
+                
+                # --- v5.1 FORENSIC RADAR (NEUTRAL) ---
+                st.divider()
+                st.subheader("🕵️ Forensic Radar (Earnings Quality)")
+                f1, f2, f3 = st.columns(3)
+                f1.metric("Operating Cash Flow", data['CFO'])
+                f2.metric("EBITDA", data['EBITDA'])
+                f3.metric("Conversion (CFO/EBITDA)", data['CFO_to_EBITDA'])
+                
+                st.divider()
+                st.subheader("📉 Technical Breakout Check")
+                st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
+                
+                st.divider()
+                st.subheader("📝 Forensic Analysis")
+                try:
+                    report = analyze_stock(api_key, selected_model, data)
+                    st.markdown(report)
+                except Exception as e:
+                    st.error(f"AI Error: {e}")
