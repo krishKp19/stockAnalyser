@@ -1,7 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-import yfinance as yf
-import pandas_ta as ta
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -16,7 +14,6 @@ st.markdown("""
     [data-testid="stMetricValue"] { font-size: 24px; color: #ffffff; }
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
     .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
-    .demo-badge { background-color: #FFA500; color: black; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,7 +82,8 @@ def plot_technical_chart(hist, ticker):
 
 # --- MOCK DATA GENERATOR (THE SAVIOR) ---
 def generate_mock_data(ticker):
-    """Generates realistic dummy data when Yahoo blocks the IP."""
+    """Generates realistic dummy data when Yahoo blocks the IP or Imports fail."""
+    import pandas_ta as ta # Lazy import here too
     dates = pd.date_range(end=datetime.today(), periods=500)
     
     # Create a random walk for price
@@ -101,9 +99,15 @@ def generate_mock_data(ticker):
     hist['Volume'] = np.random.randint(100000, 5000000, 500)
     
     # Add Mock Technicals
-    hist['RSI'] = ta.rsi(hist['Close'], length=14).fillna(50)
-    hist['SMA_50'] = ta.sma(hist['Close'], length=50).fillna(base_price)
-    hist['SMA_200'] = ta.sma(hist['Close'], length=200).fillna(base_price)
+    try:
+        hist['RSI'] = ta.rsi(hist['Close'], length=14).fillna(50)
+        hist['SMA_50'] = ta.sma(hist['Close'], length=50).fillna(base_price)
+        hist['SMA_200'] = ta.sma(hist['Close'], length=200).fillna(base_price)
+    except:
+        # Fallback if TA lib fails
+        hist['RSI'] = 50
+        hist['SMA_50'] = base_price
+        hist['SMA_200'] = base_price
     
     # Mock Info Dict
     info = {
@@ -123,11 +127,15 @@ def generate_mock_data(ticker):
     
     return info, hist
 
-# --- DATA ENGINE (HYBRID) ---
+# --- DATA ENGINE (CRASH PROOF) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     is_live = True
     try:
+        # LAZY IMPORT: We import here so the app loads even if this fails
+        import yfinance as yf
+        import pandas_ta as ta
+        
         # 1. Try Live Fetch
         stock = yf.Ticker(ticker)
         hist = stock.history(period="2y")
@@ -136,161 +144,14 @@ def get_market_data(ticker):
             raise ValueError("Empty Data")
             
         info = stock.info
-        # If info is empty (common block symptom), raise error to trigger mock
         if len(info) < 2: 
             raise ValueError("Blocked Info")
             
     except Exception:
-        # 2. FALLBACK TO MOCK DATA
+        # 2. FALLBACK TO MOCK DATA AUTOMATICALLY
         is_live = False
         info, hist = generate_mock_data(ticker)
 
-    # --- PROCESS DATA (Common for both Live & Mock) ---
+    # --- PROCESS DATA ---
     try:
-        # Technicals (If live, calc them; if mock, they are already there)
-        if is_live:
-            hist['RSI'] = ta.rsi(hist['Close'], length=14)
-            hist['SMA_50'] = ta.sma(hist['Close'], length=50)
-            hist['SMA_200'] = ta.sma(hist['Close'], length=200)
-        
-        latest = hist.iloc[-1]
-        
-        # Benchmark RS (Only if live)
-        rs_metric = "N/A (Mode: Sim)"
-        if is_live:
-            try:
-                benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
-                bench = yf.Ticker(benchmark_symbol)
-                bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
-                if len(hist) > 126 and len(bench_hist) > 126:
-                    stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
-                    bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
-                    rs_value = (stock_6m - bench_6m) * 100
-                    rs_metric = f"{rs_value:+.2f}%"
-            except: pass
-
-        # News
-        news_headlines = ["Live news unavailable in Simulation Mode."]
-        if is_live:
-            try:
-                news = stock.news
-                news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
-            except: pass
-
-        sector_ctx = get_sector_context(info)
-        
-        def safe_fmt(val, is_percent=False):
-            if val is None or val == "N/A": return "N/A"
-            if isinstance(val, (int, float)):
-                if is_percent: return f"{val * 100:.2f}%"
-                return f"{val:.2f}"
-            return val
-            
-        de_ratio = info.get('debtToEquity', None)
-        if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
-
-        metrics = {
-            "Symbol": ticker,
-            "Price": f"{latest['Close']:.2f}",
-            "Market Cap": info.get('marketCap', 'N/A'),
-            "D/E Ratio": safe_fmt(de_ratio),
-            "Current Ratio": safe_fmt(info.get('currentRatio', None)),
-            "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
-            "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
-            "Profit Growth": safe_fmt(info.get('earningsGrowth', None), is_percent=True),
-            "P/E": safe_fmt(info.get('trailingPE', None)),
-            "PEG": safe_fmt(info.get('pegRatio', None)),
-            "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
-            "RSI": f"{latest['RSI']:.2f}",
-            "RS_Rating": rs_metric,
-            "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
-            "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
-            "Sector_Info": sector_ctx,
-            "News_Headlines": news_headlines,
-            "Is_Live": is_live
-        }
-        return metrics, hist
-    except Exception as e:
-        return None, None
-
-# --- AI ENGINE ---
-def analyze_stock(api_key, model_name, data):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-    val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
-    
-    prompt = f"""
-    Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
-    SECTOR CONTEXT: {data['Sector_Info']['Advice']}
-    DATA: {data}
-    
-    FRAMEWORK:
-    1. Safety: Debt/Equity {data['D/E Ratio']}, Current Ratio {data['Current Ratio']}.
-    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}.
-    3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
-    4. Sector: Comment on sector metrics.
-    5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}.
-    6. Management: Inst Hold {data['Inst Hold']}.
-    7. Risks: List 2 key risks.
-    
-    OUTPUT:
-    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
-    # 🎯 VERDICT: [BUY / WATCH / SELL]
-    **Reason:** (One sentence summary).
-    (Continue with 7 numbered points)
-    """
-    response = model.generate_content(prompt)
-    return response.text
-
-# --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal")
-st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
-
-with st.form("run_form"):
-    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
-        submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
-
-if submitted:
-    if not api_key:
-        st.error("⚠️ Enter API Key")
-    else:
-        with st.spinner(f"Analyzing {ticker}..."):
-            data, hist = get_market_data(ticker)
-            
-            if data and hist is not None:
-                # Mode Banner
-                if not data['Is_Live']:
-                    st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
-                else:
-                    st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
-
-                # DASHBOARD
-                st.subheader(f"📊 {ticker} Dashboard")
-                st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("EV / EBITDA", data['EV/EBITDA'])
-                m2.metric("P/E Ratio", data['P/E'])
-                m3.metric("Debt / Equity", data['D/E Ratio'])
-                m4.metric("Current Ratio", data['Current Ratio'])
-                
-                t1, t2, t3, t4 = st.columns(4)
-                t1.metric("ROE", data['ROE'])
-                t2.metric("PEG Ratio", data['PEG'])
-                t3.metric("RSI (14)", data['RSI'])
-                t4.metric("Trend", data['Trend'])
-                
-                st.divider()
-                st.subheader("📉 Technical Breakout Check")
-                st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
-                
-                st.divider()
-                st.subheader("📝 Forensic Analysis")
-                try:
-                    report = analyze_stock(api_key, selected_model, data)
-                    st.markdown(report)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
+        # Technicals (If live, calc
