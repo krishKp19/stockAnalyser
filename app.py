@@ -41,9 +41,8 @@ with st.sidebar:
     st.divider()
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
-    # v5.0 Version Stamp
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.0 | AI Forensic Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.1 | Neutral Forensic Data</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -87,10 +86,8 @@ def plot_technical_chart(hist, ticker):
 
 # --- MOCK DATA GENERATOR ---
 def generate_mock_data(ticker):
-    """Generates realistic dummy data when Yahoo blocks the IP or Imports fail."""
+    """Generates realistic dummy data when Yahoo blocks the IP."""
     dates = pd.date_range(end=datetime.today(), periods=500)
-    
-    # Create a random walk for price
     base_price = 400.0
     returns = np.random.normal(0, 0.02, 500)
     price_path = base_price * (1 + returns).cumprod()
@@ -107,7 +104,6 @@ def generate_mock_data(ticker):
     hist['SMA_200'] = hist['Close'].rolling(window=200).mean().fillna(base_price)
     hist['RSI'] = 50 + np.random.normal(0, 10, 500)
     
-    # Mock Info Dict (Updated for v5.0 with Cash Flow Data)
     info = {
         'sector': 'Basic Materials (Simulated)',
         'industry': 'Other Industrial Metals',
@@ -121,37 +117,27 @@ def generate_mock_data(ticker):
         'pegRatio': 0.9,
         'enterpriseToEbitda': 6.5,
         'heldPercentInstitutions': 0.35,
-        # v5.0 Mock Cash Flow Data (Healthy scenario)
         'operatingCashflow': 8000000000,
         'ebitda': 10000000000
     }
     
     return info, hist
 
-# --- DATA ENGINE (CRASH PROOF) ---
+# --- DATA ENGINE ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     is_live = True
     try:
         import yfinance as yf
-        
-        # 1. Try Live Fetch
         stock = yf.Ticker(ticker)
         hist = stock.history(period="2y")
-        
-        if hist.empty:
-            raise ValueError("Empty Data")
-            
+        if hist.empty: raise ValueError("Empty Data")
         info = stock.info
-        if len(info) < 2: 
-            raise ValueError("Blocked Info")
-            
+        if len(info) < 2: raise ValueError("Blocked Info")
     except Exception:
-        # 2. FALLBACK TO MOCK DATA AUTOMATICALLY
         is_live = False
         info, hist = generate_mock_data(ticker)
 
-    # --- PROCESS DATA ---
     try:
         # Technicals
         if is_live:
@@ -204,19 +190,14 @@ def get_market_data(ticker):
         de_ratio = info.get('debtToEquity', None)
         if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
 
-        # v5.0 Forensic Data Preparation
+        # v5.1 Forensic Data (Neutral)
         cfo = info.get('operatingCashflow', None)
         ebitda = info.get('ebitda', None)
         cfo_to_ebitda = "N/A"
-        cfo_status = "Neutral"
         
         if cfo and ebitda and ebitda != 0:
             ratio = cfo / ebitda
             cfo_to_ebitda = f"{ratio:.0%}"
-            if ratio > 0.7:
-                cfo_status = "Healthy 🟢"
-            else:
-                cfo_status = "Red Flag 🔴"
 
         metrics = {
             "Symbol": ticker,
@@ -227,113 +208,4 @@ def get_market_data(ticker):
             "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
             "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
             "Profit Growth": safe_fmt(info.get('earningsGrowth', None), is_percent=True),
-            "P/E": safe_fmt(info.get('trailingPE', None)),
-            "PEG": safe_fmt(info.get('pegRatio', None)),
-            "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
-            "RSI": f"{latest['RSI']:.2f}",
-            "RS_Rating": rs_metric,
-            "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
-            "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
-            "Sector_Info": sector_ctx,
-            "News_Headlines": news_headlines,
-            "Is_Live": is_live,
-            # v5.0 Forensic Data
-            "CFO": safe_fmt(cfo),
-            "EBITDA": safe_fmt(ebitda),
-            "CFO_to_EBITDA": cfo_to_ebitda,
-            "CFO_Status": cfo_status
-        }
-        return metrics, hist
-    except Exception as e:
-        return None, None
-
-# --- AI ENGINE ---
-def analyze_stock(api_key, model_name, data):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-    val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
-    
-    prompt = f"""
-    Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
-    SECTOR CONTEXT: {data['Sector_Info']['Advice']}
-    DATA: {data}
-    
-    FRAMEWORK:
-    1. Safety: Debt/Equity {data['D/E Ratio']}, Current Ratio {data['Current Ratio']}.
-    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}.
-    3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
-    4. Sector: Comment on sector metrics.
-    5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}.
-    6. Management: Inst Hold {data['Inst Hold']}.
-    7. Risks: List 2 key risks.
-    
-    OUTPUT:
-    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
-    # 🎯 VERDICT: [BUY / WATCH / SELL]
-    **Reason:** (One sentence summary).
-    (Continue with 7 numbered points)
-    """
-    response = model.generate_content(prompt)
-    return response.text
-
-# --- MAIN UI ---
-st.title("📈 AI Hedge Fund Terminal")
-st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
-
-with st.form("run_form"):
-    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
-        submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
-
-if submitted:
-    if not api_key:
-        st.error("⚠️ Enter API Key")
-    else:
-        with st.spinner(f"Analyzing {ticker}..."):
-            data, hist = get_market_data(ticker)
-            
-            if data and hist is not None:
-                # Mode Banner
-                if not data['Is_Live']:
-                    st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
-                else:
-                    st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
-
-                # DASHBOARD
-                st.subheader(f"📊 {ticker} Dashboard")
-                st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("EV / EBITDA", data['EV/EBITDA'])
-                m2.metric("P/E Ratio", data['P/E'])
-                m3.metric("Debt / Equity", data['D/E Ratio'])
-                m4.metric("Current Ratio", data['Current Ratio'])
-                
-                t1, t2, t3, t4 = st.columns(4)
-                t1.metric("ROE", data['ROE'])
-                t2.metric("PEG Ratio", data['PEG'])
-                t3.metric("RSI (14)", data['RSI'])
-                t4.metric("Trend", data['Trend'])
-                
-                # --- v5.0 FORENSIC RADAR (NEW SECTION) ---
-                st.divider()
-                st.subheader("🕵️ Forensic Radar (Earnings Quality)")
-                f1, f2, f3 = st.columns(3)
-                f1.metric("Operating Cash Flow", data['CFO'])
-                f2.metric("EBITDA", data['EBITDA'])
-                f3.metric("Conversion (CFO/EBITDA)", data['CFO_to_EBITDA'], delta=data['CFO_Status'])
-                st.caption("Target: CFO should be > 70% of EBITDA. If lower, profits might be artificial.")
-                
-                st.divider()
-                st.subheader("📉 Technical Breakout Check")
-                st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
-                
-                st.divider()
-                st.subheader("📝 Forensic Analysis")
-                try:
-                    report = analyze_stock(api_key, selected_model, data)
-                    st.markdown(report)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
+            "P/E":
