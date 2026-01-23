@@ -15,11 +15,6 @@ st.markdown("""
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
     .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
     .version-text { font-size: 12px; color: #444; text-align: center; margin-top: 50px; }
-    .signal-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
-    .signal-3 { background-color: #00FF00; color: black; } /* Strong */
-    .signal-2 { background-color: #90EE90; color: black; } /* Good */
-    .signal-1 { background-color: #FFFF00; color: black; } /* Weak */
-    .signal-0 { background-color: #FF6347; color: white; } /* None */
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,7 +42,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.2 | Signal Engine Integration</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.3 | Final UX Polish</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -104,7 +99,6 @@ def generate_mock_data(ticker):
     hist['Low'] = hist[['Open', 'Close']].min(axis=1) * (1 - np.abs(np.random.normal(0, 0.005, 500)))
     hist['Volume'] = np.random.randint(100000, 5000000, 500)
     
-    # Mock Technicals
     hist['SMA_50'] = hist['Close'].rolling(window=50).mean().fillna(base_price)
     hist['SMA_200'] = hist['Close'].rolling(window=200).mean().fillna(base_price)
     hist['RSI'] = 50 + np.random.normal(0, 10, 500)
@@ -117,7 +111,7 @@ def generate_mock_data(ticker):
         'currentRatio': 1.8,
         'returnOnEquity': 0.18,
         'revenueGrowth': 0.12,
-        'earningsGrowth': 0.30, # High growth for leverage check
+        'earningsGrowth': 0.30, 
         'trailingPE': 12.5,
         'pegRatio': 0.9,
         'enterpriseToEbitda': 6.5,
@@ -129,7 +123,7 @@ def generate_mock_data(ticker):
     
     return info, hist
 
-# --- SIGNAL CALCULATION LOGIC (LAYER 1 & 2) ---
+# --- SIGNAL CALCULATION LOGIC ---
 def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
     # 1. Volume Signal
     vol_score = 0
@@ -149,25 +143,23 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         elif oplev_ratio > 2.0: oplev_score, oplev_msg = 2, "Strong Leverage"
         elif oplev_ratio > 1.0: oplev_score, oplev_msg = 1, "Healthy Scaling"
     
-    # 3. Promoter Holding Signal (Governance)
-    # Note: Using raw decimal from API (0.45 = 45%)
+    # 3. Promoter Holding Signal
     prom_score = 0
     prom_msg = "Low Alignment"
     if promoter_hold > 0.6: prom_score, prom_msg = 3, "High Conviction"
     elif promoter_hold > 0.4: prom_score, prom_msg = 2, "Strong Skin-in-Game"
     elif promoter_hold > 0.2: prom_score, prom_msg = 1, "Moderate Confidence"
 
-    # 4. Composite Score (Layer 3)
-    # Weight: 40% OpLev + 35% Vol + 25% Promo
+    # 4. Composite Score
     final_score = (0.40 * oplev_score) + (0.35 * vol_score) + (0.25 * prom_score)
     
-    # 5. Interpretation (Layer 4)
+    # 5. Interpretation
     verdict = "Ignore"
     if final_score > 2.4: verdict = "High Conviction Buy 🚀"
     elif final_score > 1.8: verdict = "Investigate 🔍"
     elif final_score > 1.0: verdict = "Watchlist 👀"
 
-    # 6. Conflict Detection (Optional)
+    # 6. Conflict Detection
     conflict_msg = "None"
     if vol_score >= 2 and oplev_score == 0:
         conflict_msg = "Speculative Spike (Price moving without fundamentals)"
@@ -198,7 +190,6 @@ def get_market_data(ticker):
 
     try:
         # Technicals
-        avg_vol_20 = 0
         if is_live:
             try:
                 import pandas_ta as ta
@@ -291,7 +282,6 @@ def get_market_data(ticker):
             "CFO": safe_fmt(cfo),
             "EBITDA": safe_fmt(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
-            # Signal Data
             "Signals": signals
         }
         return metrics, hist
@@ -361,20 +351,6 @@ if submitted:
                 else:
                     st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
 
-                # --- SIGNAL BOARD (NEW) ---
-                sig = data['Signals']
-                st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
-                
-                s1, s2, s3 = st.columns(3)
-                s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'])
-                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'])
-                s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'])
-                
-                if sig['Conflict'] != "None":
-                    st.info(f"💡 **Insight:** {sig['Conflict']}")
-
-                st.divider()
-
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
                 st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
@@ -400,6 +376,22 @@ if submitted:
                 f3.metric("Cash Conv.", data['CFO_to_EBITDA'])
                 f4.metric("Inst. Hold", data['Inst Hold'])
                 
+                # --- SIGNAL BOARD (MOVED DOWN & ADDED TOOLTIPS) ---
+                st.divider()
+                sig = data['Signals']
+                st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
+                
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'], 
+                          help="Current Volume vs 20-Day Avg. >2.0x indicates breakout interest.")
+                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'],
+                          help="Earnings Growth vs Revenue Growth. >2.0x implies high efficiency scale.")
+                s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'],
+                          help="Based on Insider Holding %. Higher holding = better alignment.")
+                
+                if sig['Conflict'] != "None":
+                    st.info(f"💡 **Insight:** {sig['Conflict']}")
+
                 st.divider()
                 st.subheader("📉 Technical Breakout Check")
                 st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
