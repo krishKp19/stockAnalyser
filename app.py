@@ -14,6 +14,7 @@ st.markdown("""
     [data-testid="stMetricValue"] { font-size: 24px; color: #ffffff; }
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
     .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
+    .version-text { font-size: 12px; color: #444; text-align: center; margin-top: 50px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,6 +40,10 @@ with st.sidebar:
 
     st.divider()
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
+    
+    # v5.0 Version Stamp
+    st.markdown("---")
+    st.markdown("<p class='version-text'>v5.0 | AI Forensic Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -97,14 +102,12 @@ def generate_mock_data(ticker):
     hist['Low'] = hist[['Open', 'Close']].min(axis=1) * (1 - np.abs(np.random.normal(0, 0.005, 500)))
     hist['Volume'] = np.random.randint(100000, 5000000, 500)
     
-    # Add Mock Technicals (Manual calculation to avoid import issues in mock)
-    # Simple Moving Averages
+    # Mock Technicals
     hist['SMA_50'] = hist['Close'].rolling(window=50).mean().fillna(base_price)
     hist['SMA_200'] = hist['Close'].rolling(window=200).mean().fillna(base_price)
-    # Mock RSI (Simple random fluctuation around 50)
     hist['RSI'] = 50 + np.random.normal(0, 10, 500)
     
-    # Mock Info Dict
+    # Mock Info Dict (Updated for v5.0 with Cash Flow Data)
     info = {
         'sector': 'Basic Materials (Simulated)',
         'industry': 'Other Industrial Metals',
@@ -117,7 +120,10 @@ def generate_mock_data(ticker):
         'trailingPE': 12.5,
         'pegRatio': 0.9,
         'enterpriseToEbitda': 6.5,
-        'heldPercentInstitutions': 0.35
+        'heldPercentInstitutions': 0.35,
+        # v5.0 Mock Cash Flow Data (Healthy scenario)
+        'operatingCashflow': 8000000000,
+        'ebitda': 10000000000
     }
     
     return info, hist
@@ -127,7 +133,6 @@ def generate_mock_data(ticker):
 def get_market_data(ticker):
     is_live = True
     try:
-        # LAZY IMPORT: We import here so the app loads even if this fails
         import yfinance as yf
         
         # 1. Try Live Fetch
@@ -148,19 +153,17 @@ def get_market_data(ticker):
 
     # --- PROCESS DATA ---
     try:
-        # Technicals (If live, calc them; if mock, they are already there)
+        # Technicals
         if is_live:
-            # We use try/except specifically for pandas_ta to avoid crashing if missing
             try:
                 import pandas_ta as ta
                 hist['RSI'] = ta.rsi(hist['Close'], length=14)
                 hist['SMA_50'] = ta.sma(hist['Close'], length=50)
                 hist['SMA_200'] = ta.sma(hist['Close'], length=200)
             except ImportError:
-                # Fallback if pandas_ta is missing
                 hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
                 hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
-                hist['RSI'] = 50 # Default neutral
+                hist['RSI'] = 50 
         
         latest = hist.iloc[-1]
         
@@ -201,6 +204,20 @@ def get_market_data(ticker):
         de_ratio = info.get('debtToEquity', None)
         if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
 
+        # v5.0 Forensic Data Preparation
+        cfo = info.get('operatingCashflow', None)
+        ebitda = info.get('ebitda', None)
+        cfo_to_ebitda = "N/A"
+        cfo_status = "Neutral"
+        
+        if cfo and ebitda and ebitda != 0:
+            ratio = cfo / ebitda
+            cfo_to_ebitda = f"{ratio:.0%}"
+            if ratio > 0.7:
+                cfo_status = "Healthy 🟢"
+            else:
+                cfo_status = "Red Flag 🔴"
+
         metrics = {
             "Symbol": ticker,
             "Price": f"{latest['Close']:.2f}",
@@ -219,7 +236,12 @@ def get_market_data(ticker):
             "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
             "Sector_Info": sector_ctx,
             "News_Headlines": news_headlines,
-            "Is_Live": is_live
+            "Is_Live": is_live,
+            # v5.0 Forensic Data
+            "CFO": safe_fmt(cfo),
+            "EBITDA": safe_fmt(ebitda),
+            "CFO_to_EBITDA": cfo_to_ebitda,
+            "CFO_Status": cfo_status
         }
         return metrics, hist
     except Exception as e:
@@ -294,6 +316,15 @@ if submitted:
                 t2.metric("PEG Ratio", data['PEG'])
                 t3.metric("RSI (14)", data['RSI'])
                 t4.metric("Trend", data['Trend'])
+                
+                # --- v5.0 FORENSIC RADAR (NEW SECTION) ---
+                st.divider()
+                st.subheader("🕵️ Forensic Radar (Earnings Quality)")
+                f1, f2, f3 = st.columns(3)
+                f1.metric("Operating Cash Flow", data['CFO'])
+                f2.metric("EBITDA", data['EBITDA'])
+                f3.metric("Conversion (CFO/EBITDA)", data['CFO_to_EBITDA'], delta=data['CFO_Status'])
+                st.caption("Target: CFO should be > 70% of EBITDA. If lower, profits might be artificial.")
                 
                 st.divider()
                 st.subheader("📉 Technical Breakout Check")
