@@ -15,6 +15,11 @@ st.markdown("""
     [data-testid="stMetricLabel"] { font-size: 14px; color: #888888; }
     .stAlert { background-color: #1e1e1e; color: #ff4b4b; border: 1px solid #ff4b4b; }
     .version-text { font-size: 12px; color: #444; text-align: center; margin-top: 50px; }
+    .signal-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+    .signal-3 { background-color: #00FF00; color: black; } /* Strong */
+    .signal-2 { background-color: #90EE90; color: black; } /* Good */
+    .signal-1 { background-color: #FFFF00; color: black; } /* Weak */
+    .signal-0 { background-color: #FF6347; color: white; } /* None */
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,7 +47,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.1 | Neutral Forensic Data</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.2 | Signal Engine Integration</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -112,16 +117,69 @@ def generate_mock_data(ticker):
         'currentRatio': 1.8,
         'returnOnEquity': 0.18,
         'revenueGrowth': 0.12,
-        'earningsGrowth': 0.15,
+        'earningsGrowth': 0.30, # High growth for leverage check
         'trailingPE': 12.5,
         'pegRatio': 0.9,
         'enterpriseToEbitda': 6.5,
         'heldPercentInstitutions': 0.35,
+        'heldPercentInsiders': 0.45,
         'operatingCashflow': 8000000000,
         'ebitda': 10000000000
     }
     
     return info, hist
+
+# --- SIGNAL CALCULATION LOGIC (LAYER 1 & 2) ---
+def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
+    # 1. Volume Signal
+    vol_score = 0
+    vol_msg = "Normal"
+    if vol_ratio > 3.0: vol_score, vol_msg = 3, "Institutional Aggression"
+    elif vol_ratio > 2.0: vol_score, vol_msg = 2, "Confirmed Breakout"
+    elif vol_ratio > 1.2: vol_score, vol_msg = 1, "Rising Interest"
+    
+    # 2. Operating Leverage Signal
+    oplev_score = 0
+    oplev_msg = "No Leverage"
+    oplev_ratio = 0.0
+    
+    if rev_growth > 0 and earn_growth > 0:
+        oplev_ratio = earn_growth / rev_growth
+        if oplev_ratio > 4.0: oplev_score, oplev_msg = 3, "Parabolic Economics"
+        elif oplev_ratio > 2.0: oplev_score, oplev_msg = 2, "Strong Leverage"
+        elif oplev_ratio > 1.0: oplev_score, oplev_msg = 1, "Healthy Scaling"
+    
+    # 3. Promoter Holding Signal (Governance)
+    # Note: Using raw decimal from API (0.45 = 45%)
+    prom_score = 0
+    prom_msg = "Low Alignment"
+    if promoter_hold > 0.6: prom_score, prom_msg = 3, "High Conviction"
+    elif promoter_hold > 0.4: prom_score, prom_msg = 2, "Strong Skin-in-Game"
+    elif promoter_hold > 0.2: prom_score, prom_msg = 1, "Moderate Confidence"
+
+    # 4. Composite Score (Layer 3)
+    # Weight: 40% OpLev + 35% Vol + 25% Promo
+    final_score = (0.40 * oplev_score) + (0.35 * vol_score) + (0.25 * prom_score)
+    
+    # 5. Interpretation (Layer 4)
+    verdict = "Ignore"
+    if final_score > 2.4: verdict = "High Conviction Buy 🚀"
+    elif final_score > 1.8: verdict = "Investigate 🔍"
+    elif final_score > 1.0: verdict = "Watchlist 👀"
+
+    # 6. Conflict Detection (Optional)
+    conflict_msg = "None"
+    if vol_score >= 2 and oplev_score == 0:
+        conflict_msg = "Speculative Spike (Price moving without fundamentals)"
+    elif oplev_score >= 2 and vol_score == 0:
+        conflict_msg = "Early Fundamental Story (Good numbers, market hasn't noticed)"
+
+    return {
+        "Vol_Score": vol_score, "Vol_Msg": vol_msg, "Vol_Ratio": vol_ratio,
+        "OpLev_Score": oplev_score, "OpLev_Msg": oplev_msg, "OpLev_Ratio": oplev_ratio,
+        "Prom_Score": prom_score, "Prom_Msg": prom_msg,
+        "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
+    }
 
 # --- DATA ENGINE ---
 @st.cache_data(ttl=3600)
@@ -140,6 +198,7 @@ def get_market_data(ticker):
 
     try:
         # Technicals
+        avg_vol_20 = 0
         if is_live:
             try:
                 import pandas_ta as ta
@@ -151,6 +210,11 @@ def get_market_data(ticker):
                 hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
                 hist['RSI'] = 50 
         
+        # Calculate Volume Surge Data
+        avg_vol_20 = hist['Volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = hist['Volume'].iloc[-1]
+        vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
+
         latest = hist.iloc[-1]
         
         # Benchmark RS
@@ -190,14 +254,20 @@ def get_market_data(ticker):
         de_ratio = info.get('debtToEquity', None)
         if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
 
-        # v5.1 Forensic Data (Neutral)
+        # Data for Signals
+        rev_g = info.get('revenueGrowth', 0)
+        prof_g = info.get('earningsGrowth', 0)
+        prom_hold = info.get('heldPercentInsiders', 0)
+        
+        # Calculate Signals
+        signals = calculate_signals(vol_ratio, rev_g, prof_g, prom_hold)
+
+        # Forensic: Cash Flow
         cfo = info.get('operatingCashflow', None)
         ebitda = info.get('ebitda', None)
         cfo_to_ebitda = "N/A"
-        
         if cfo and ebitda and ebitda != 0:
-            ratio = cfo / ebitda
-            cfo_to_ebitda = f"{ratio:.0%}"
+            cfo_to_ebitda = f"{(cfo / ebitda):.0%}"
 
         metrics = {
             "Symbol": ticker,
@@ -206,8 +276,8 @@ def get_market_data(ticker):
             "D/E Ratio": safe_fmt(de_ratio),
             "Current Ratio": safe_fmt(info.get('currentRatio', None)),
             "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
-            "Rev Growth": safe_fmt(info.get('revenueGrowth', None), is_percent=True),
-            "Profit Growth": safe_fmt(info.get('earningsGrowth', None), is_percent=True),
+            "Rev Growth": safe_fmt(rev_g, is_percent=True),
+            "Profit Growth": safe_fmt(prof_g, is_percent=True),
             "P/E": safe_fmt(info.get('trailingPE', None)),
             "PEG": safe_fmt(info.get('pegRatio', None)),
             "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
@@ -220,7 +290,9 @@ def get_market_data(ticker):
             "Is_Live": is_live,
             "CFO": safe_fmt(cfo),
             "EBITDA": safe_fmt(ebitda),
-            "CFO_to_EBITDA": cfo_to_ebitda
+            "CFO_to_EBITDA": cfo_to_ebitda,
+            # Signal Data
+            "Signals": signals
         }
         return metrics, hist
     except Exception as e:
@@ -231,29 +303,36 @@ def analyze_stock(api_key, model_name, data):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
     val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
+    sig = data['Signals']
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
     DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
-    DATA: {data}
     
-    IMPORTANT: Evaluate the Earnings Quality based on CFO ({data['CFO']}) vs EBITDA ({data['EBITDA']}).
-    If CFO is significantly lower than EBITDA, determine if this is due to Sector Norms or a potential red flag.
+    ### 🚦 SIGNAL DIAGNOSTIC (The Core Thesis)
+    - **Stock Readiness Score:** {sig['Final_Score']:.2f} / 3.0 ({sig['Verdict']})
+    - **Conflict Check:** {sig['Conflict']}
+    - Volume Signal: {sig['Vol_Score']}/3 ({sig['Vol_Msg']})
+    - Operating Leverage: {sig['OpLev_Score']}/3 ({sig['OpLev_Msg']})
+    - Promoter Confidence: {sig['Prom_Score']}/3 ({sig['Prom_Msg']})
+    
+    DATA: {data}
     
     FRAMEWORK:
     1. Safety: Debt/Equity {data['D/E Ratio']}, Current Ratio {data['Current Ratio']}.
-    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}.
+    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}. Op Leverage: {sig['OpLev_Ratio']:.2f}x.
     3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
     4. Sector: Comment on sector metrics.
-    5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}.
-    6. Management: Inst Hold {data['Inst Hold']}.
+    5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}, Volume Surge {sig['Vol_Ratio']:.1f}x.
+    6. Management: Inst Hold {data['Inst Hold']}, Promoter Hold {sig['Prom_Score']} rating.
     7. Risks: List 2 key risks.
     
     OUTPUT:
-    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
-    # 🎯 VERDICT: [BUY / WATCH / SELL]
-    **Reason:** (One sentence summary).
+    # 🔍 Analysis: {sig['Verdict']}
+    
+    **Thesis:** (Explain the Readiness Score and Conflict Check in 2 sentences).
+    
     (Continue with 7 numbered points)
     """
     response = model.generate_content(prompt)
@@ -277,11 +356,24 @@ if submitted:
             data, hist = get_market_data(ticker)
             
             if data and hist is not None:
-                # Mode Banner
                 if not data['Is_Live']:
                     st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
                 else:
                     st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
+
+                # --- SIGNAL BOARD (NEW) ---
+                sig = data['Signals']
+                st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
+                
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'])
+                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'])
+                s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'])
+                
+                if sig['Conflict'] != "None":
+                    st.info(f"💡 **Insight:** {sig['Conflict']}")
+
+                st.divider()
 
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
@@ -299,13 +391,14 @@ if submitted:
                 t3.metric("RSI (14)", data['RSI'])
                 t4.metric("Trend", data['Trend'])
                 
-                # --- v5.1 FORENSIC RADAR (NEUTRAL) ---
+                # FORENSIC RADAR
                 st.divider()
-                st.subheader("🕵️ Forensic Radar (Earnings Quality)")
-                f1, f2, f3 = st.columns(3)
+                st.subheader("🕵️ Forensic Radar")
+                f1, f2, f3, f4 = st.columns(4)
                 f1.metric("Operating Cash Flow", data['CFO'])
                 f2.metric("EBITDA", data['EBITDA'])
-                f3.metric("Conversion (CFO/EBITDA)", data['CFO_to_EBITDA'])
+                f3.metric("Cash Conv.", data['CFO_to_EBITDA'])
+                f4.metric("Inst. Hold", data['Inst Hold'])
                 
                 st.divider()
                 st.subheader("📉 Technical Breakout Check")
