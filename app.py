@@ -42,7 +42,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.3 | Final UX Polish</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.5 | Sales & Growth Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -118,10 +118,15 @@ def generate_mock_data(ticker):
         'heldPercentInstitutions': 0.35,
         'heldPercentInsiders': 0.45,
         'operatingCashflow': 8000000000,
-        'ebitda': 10000000000
+        'ebitda': 10000000000,
+        'totalRevenue': 50000000000 # Mock Annual Sales
     }
     
-    return info, hist
+    # Mock Sales Data for v5.5
+    sales_ttm = 52000000000
+    sales_last_yr = 48000000000
+    
+    return info, hist, sales_ttm, sales_last_yr
 
 # --- SIGNAL CALCULATION LOGIC ---
 def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
@@ -177,6 +182,9 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     is_live = True
+    sales_ttm = "N/A"
+    sales_last_yr = "N/A"
+    
     try:
         import yfinance as yf
         stock = yf.Ticker(ticker)
@@ -184,9 +192,28 @@ def get_market_data(ticker):
         if hist.empty: raise ValueError("Empty Data")
         info = stock.info
         if len(info) < 2: raise ValueError("Blocked Info")
+        
+        # --- NEW: FETCH SALES DATA (v5.5) ---
+        try:
+            # 1. Last Year Sales (Annual)
+            # income_stmt columns are usually sorted new -> old
+            income = stock.income_stmt
+            if not income.empty:
+                sales_last_yr = income.loc['Total Revenue'].iloc[0]
+            
+            # 2. Last 4 Quarters (TTM)
+            q_income = stock.quarterly_income_stmt
+            if not q_income.empty:
+                # Sum the last 4 quarters to get TTM
+                sales_ttm = q_income.loc['Total Revenue'].iloc[:4].sum()
+        except:
+            # Fallback if financial statements are missing
+            sales_ttm = info.get('totalRevenue', "N/A")
+            sales_last_yr = "N/A"
+
     except Exception:
         is_live = False
-        info, hist = generate_mock_data(ticker)
+        info, hist, sales_ttm, sales_last_yr = generate_mock_data(ticker)
 
     try:
         # Technicals
@@ -241,7 +268,14 @@ def get_market_data(ticker):
                 if is_percent: return f"{val * 100:.2f}%"
                 return f"{val:.2f}"
             return val
-            
+        
+        def format_large_number(num):
+            if isinstance(num, (int, float)):
+                if num > 1e9: return f"{num/1e9:.2f}B"
+                if num > 1e6: return f"{num/1e6:.2f}M"
+                return f"{num:.0f}"
+            return num
+
         de_ratio = info.get('debtToEquity', None)
         if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
 
@@ -282,7 +316,10 @@ def get_market_data(ticker):
             "CFO": safe_fmt(cfo),
             "EBITDA": safe_fmt(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
-            "Signals": signals
+            "Signals": signals,
+            # Sales Data
+            "Sales_TTM": format_large_number(sales_ttm),
+            "Sales_LastYr": format_large_number(sales_last_yr)
         }
         return metrics, hist
     except Exception as e:
@@ -300,12 +337,20 @@ def analyze_stock(api_key, model_name, data):
     DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     
-    ### 🚦 SIGNAL DIAGNOSTIC (The Core Thesis)
-    - **Stock Readiness Score:** {sig['Final_Score']:.2f} / 3.0 ({sig['Verdict']})
+    ### 🚦 QUANT SIGNAL DIAGNOSTIC
+    - **Stock Readiness Score:** {sig['Final_Score']:.2f} / 3.0 (Quantitative Verdict: {sig['Verdict']})
     - **Conflict Check:** {sig['Conflict']}
     - Volume Signal: {sig['Vol_Score']}/3 ({sig['Vol_Msg']})
     - Operating Leverage: {sig['OpLev_Score']}/3 ({sig['OpLev_Msg']})
     - Promoter Confidence: {sig['Prom_Score']}/3 ({sig['Prom_Msg']})
+    
+    ### 📊 GROWTH CHECK
+    - **Sales (TTM):** {data['Sales_TTM']}
+    - **Sales (Last Year):** {data['Sales_LastYr']}
+    
+    IMPORTANT: The "Readiness Score" is a strict mathematical baseline. 
+    **YOUR JOB is to interpret it.** - If the Score is LOW ("Ignore") but Fundamentals (CFO, ROE, Sales Trend) are STRONG, override the signal and recommend "WATCH" or "BUY".
+    - Explain WHY the score might be low (e.g., "Good fundamentals, but no volume momentum yet").
     
     DATA: {data}
     
@@ -319,10 +364,9 @@ def analyze_stock(api_key, model_name, data):
     7. Risks: List 2 key risks.
     
     OUTPUT:
-    # 🔍 Analysis: {sig['Verdict']}
-    
-    **Thesis:** (Explain the Readiness Score and Conflict Check in 2 sentences).
-    
+    # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
+    # 🎯 VERDICT: [BUY / WATCH / SELL]
+    **Thesis:** (Explain your verdict, referencing the Signal Score vs Fundamentals).
     (Continue with 7 numbered points)
     """
     response = model.generate_content(prompt)
@@ -374,9 +418,9 @@ if submitted:
                 f1.metric("Operating Cash Flow", data['CFO'])
                 f2.metric("EBITDA", data['EBITDA'])
                 f3.metric("Cash Conv.", data['CFO_to_EBITDA'])
-                f4.metric("Inst. Hold", data['Inst Hold'])
+                f4.metric("Sales (TTM)", data['Sales_TTM'], help="Trailing 12 Months Revenue")
                 
-                # --- SIGNAL BOARD (MOVED DOWN & ADDED TOOLTIPS) ---
+                # --- SIGNAL BOARD (BOTTOM) ---
                 st.divider()
                 sig = data['Signals']
                 st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
