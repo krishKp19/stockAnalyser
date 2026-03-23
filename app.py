@@ -2,6 +2,8 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
+import requests
+import re
 from datetime import datetime
 
 # --- PAGE CONFIGURATION ---
@@ -22,7 +24,6 @@ st.markdown("""
 with st.sidebar:
     st.header("🔑 Settings")
     
-    # Gemini API Only
     gemini_api_key = st.text_input("Gemini API Key", type="password")
     st.markdown("[Get Free Gemini Key](https://aistudio.google.com/)")
     
@@ -42,27 +43,26 @@ with st.sidebar:
         st.selectbox("AI Brain", ["Enter Gemini Key First"], disabled=True)
 
     st.divider()
-    st.info("💡 Tip: Use .NS for India (e.g. COALINDIA.NS)")
+    st.info("💡 Tip: Type the Indian stock name (e.g., COALINDIA, TCS, ITC)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v6.2 | YahooQuery Engine (Keyless)</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v6.3 | Screener.in Web Scraper Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
-def get_sector_context(sector, industry):
+def get_sector_context(industry):
     context_map = {
-        "Financial Services": "BANKING: Focus on NIM (>3.5%) and NPA trends.",
-        "Technology": "IT: Focus on Deal Wins (TCV) and Attrition.",
-        "Consumer Cyclical": "RETAIL/AUTO: Focus on Same Store Sales (SSSG).",
-        "Basic Materials": "COMMODITIES: Focus on Capacity Utilization >85%.",
-        "Utilities": "POWER: Focus on Plant Load Factor (PLF >75%).",
-        "Healthcare": "PHARMA: Focus on USFDA Status.",
-        "Energy": "OIL/GAS: Watch Crude Oil prices."
+        "Bank": "BANKING: Focus on NIM (>3.5%) and NPA trends.",
+        "IT": "IT: Focus on Deal Wins (TCV) and Attrition.",
+        "Auto": "RETAIL/AUTO: Focus on Same Store Sales (SSSG).",
+        "Mining": "COMMODITIES: Focus on Capacity Utilization >85%.",
+        "Power": "POWER: Focus on Plant Load Factor (PLF >75%).",
+        "Pharmaceuticals": "PHARMA: Focus on USFDA Status."
     }
-    is_cyclical = any(x in sector for x in ['Basic Materials', 'Energy', 'Utilities', 'Industrials'])
-    sector_advice = context_map.get(sector, f"General Sector: {sector}. Focus on Cash Flow.")
-    return {"Sector": sector, "Industry": industry, "Advice": sector_advice, "Is_Cyclical": is_cyclical}
+    is_cyclical = any(x in industry for x in ['Steel', 'Mining', 'Power', 'Auto'])
+    sector_advice = context_map.get(industry, f"General Industry: {industry}. Focus on Cash Flow vs EBITDA.")
+    return {"Sector": industry, "Industry": industry, "Advice": sector_advice, "Is_Cyclical": is_cyclical}
 
-# --- HELPER: LAZY CHARTING ---
+# --- LAZY CHARTING ---
 def plot_technical_chart(hist, ticker):
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
@@ -71,14 +71,16 @@ def plot_technical_chart(hist, ticker):
                         vertical_spacing=0.03, subplot_titles=(f'{ticker} Price', 'Volume'), 
                         row_heights=[0.7, 0.3])
 
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['open'], high=hist['high'],
-                                 low=hist['low'], close=hist['close'], name='Price'), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'],
+                                 low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
     
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange', width=1), name='50 DMA'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue', width=2), name='200 DMA'), row=1, col=1)
+    if 'SMA_50' in hist:
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange', width=1), name='50 DMA'), row=1, col=1)
+    if 'SMA_200' in hist:
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue', width=2), name='200 DMA'), row=1, col=1)
 
-    colors = ['#00FF00' if row['open'] - row['close'] >= 0 else '#FF0000' for index, row in hist.iterrows()]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['volume'], marker_color=colors, name='Volume'), row=2, col=1)
+    colors = ['#00FF00' if row['Open'] - row['Close'] >= 0 else '#FF0000' for index, row in hist.iterrows()]
+    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
     fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_dark",
                       paper_bgcolor="#0e1117", plot_bgcolor="#0e1117", 
@@ -128,161 +130,163 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE (YAHOO QUERY) ---
+# --- DATA ENGINE (SCREENER.IN NATIVE SCRAPER) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     try:
-        from yahooquery import Ticker
-        stock = Ticker(ticker)
+        clean_ticker = ticker.upper().replace('.NS', '').replace('.BO', '')
+        url = f"https://www.screener.in/company/{clean_ticker}/consolidated/"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
-        # Helper to safely extract data from yahooquery's nested dicts
-        def safe_get(module_data, key, default=None):
-            if isinstance(module_data, dict) and ticker in module_data:
-                if isinstance(module_data[ticker], dict):
-                    return module_data[ticker].get(key, default)
-            return default
-
-        # 1. Fetch History
-        hist = stock.history(period="2y")
-        if isinstance(hist, dict) or hist.empty:
-            st.error(f"❌ Failed to fetch price history for {ticker}. Check the symbol.")
-            return None, None
-            
-        # YahooQuery returns a multi-index (symbol, date). We flatten it.
-        if isinstance(hist.index, pd.MultiIndex):
-            hist = hist.xs(ticker)
-
-        # 2. Fetch Fundamentals
-        profile = stock.asset_profile
-        summary = stock.summary_detail
-        fin_data = stock.financial_data
-        key_stats = stock.key_stats
-
-        if isinstance(profile, dict) and isinstance(profile.get(ticker), str):
-            st.error(f"❌ API Error for {ticker}: {profile.get(ticker)}")
-            return None, None
-
-        # 3. Technicals
-        hist['SMA_50'] = hist['close'].rolling(window=50).mean()
-        hist['SMA_200'] = hist['close'].rolling(window=200).mean()
+        res = requests.get(url, headers=headers)
+        if res.status_code != 200:
+            url = f"https://www.screener.in/company/{clean_ticker}/" # Fallback to standalone if consolidated fails
+            res = requests.get(url, headers=headers)
+            if res.status_code != 200:
+                st.error(f"❌ Could not find {clean_ticker} on Screener.in. Ensure the spelling is correct.")
+                return None, None
+                
+        html = res.text
         
-        # RSI
-        delta = hist['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        hist['RSI'] = 100 - (100 / (1 + rs))
-        hist['RSI'].fillna(50, inplace=True)
+        # 1. Regex Extraction for Top Metrics
+        def extract_metric(name):
+            pattern = f'<span class="name">\\s*{name}\\s*</span>.*?<span class="number">([^<]+)</span>'
+            match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+            if match:
+                val = match.group(1).replace(',', '').strip()
+                try: return float(val)
+                except: return val
+            return None
 
-        # Volume Surge Data
-        avg_vol_20 = hist['volume'].rolling(window=20).mean().iloc[-1]
-        current_vol = hist['volume'].iloc[-1]
-        vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
+        mcap = extract_metric('Market Cap')
+        pe = extract_metric('Stock P/E')
+        roe = extract_metric('ROE')
+        de = extract_metric('Debt to equity')
+        price = extract_metric('Current Price')
+        promoter = extract_metric('Promoter holding') or 0.0
+        if isinstance(promoter, float): promoter = promoter / 100
 
-        # Calculations & Formatting
-        sector = safe_get(profile, 'sector', 'Unknown')
-        industry = safe_get(profile, 'industry', 'Unknown')
-        sector_ctx = get_sector_context(sector, industry)
+        # 2. Extract Industry
+        industry = "Unknown"
+        ind_match = re.search(r'Sector:\s*<a[^>]*>([^<]+)</a>', html, re.IGNORECASE)
+        if ind_match: industry = ind_match.group(1).strip()
+        sector_ctx = get_sector_context(industry)
 
-        rev_g = safe_get(fin_data, 'revenueGrowth', 0)
-        prof_g = safe_get(fin_data, 'earningsGrowth', 0)
-        prom_hold = safe_get(key_stats, 'heldPercentInsiders', 0)
-        
-        signals = calculate_signals(vol_ratio, rev_g, prof_g, prom_hold)
+        # 3. Parse Financial Tables for Deep Analytics
+        sales_ttm, ebitda, cfo = "N/A", "N/A", "N/A"
+        try:
+            tables = pd.read_html(html)
+            for df in tables:
+                if df.empty: continue
+                df.set_index(df.columns[0], inplace=True)
+                
+                # P&L Table
+                if any('Sales' in str(idx) for idx in df.index):
+                    sales_row = [idx for idx in df.index if 'Sales' in str(idx)][0]
+                    sales_ttm = df.loc[sales_row].iloc[-1]
+                    
+                    op_row = [idx for idx in df.index if 'Operating Profit' in str(idx)]
+                    if op_row: ebitda = df.loc[op_row[0]].iloc[-1]
+                
+                # Cash Flow Table
+                if any('Operating Activity' in str(idx) for idx in df.index):
+                    cfo_row = [idx for idx in df.index if 'Operating Activity' in str(idx)][0]
+                    cfo = df.loc[cfo_row].iloc[-1]
+        except Exception as e:
+            pass # Tables might not parse perfectly, fallback to N/A
 
-        cfo = safe_get(fin_data, 'operatingCashflow', None)
-        ebitda = safe_get(fin_data, 'ebitda', None)
         cfo_to_ebitda = "N/A"
-        if cfo and ebitda and ebitda != 0:
+        if isinstance(cfo, (int, float)) and isinstance(ebitda, (int, float)) and ebitda != 0:
             cfo_to_ebitda = f"{(cfo / ebitda):.0%}"
 
-        def safe_fmt(val, is_percent=False):
-            if val is None or val == "N/A" or pd.isna(val): return "N/A"
-            try:
-                val = float(val)
-                if is_percent: return f"{val * 100:.2f}%"
-                return f"{val:.2f}"
-            except:
-                return str(val)
+        # 4. Fetch Technical Price Chart (Best Effort via Yahoo, safe failure)
+        hist = None
+        rsi_val, trend, vol_ratio = 50, "N/A", 1.0
+        try:
+            import yfinance as yf
+            hist_yf = yf.Ticker(ticker if ".NS" in ticker else f"{ticker}.NS").history(period="1y")
+            if not hist_yf.empty:
+                hist = hist_yf
+                hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
+                hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
+                
+                delta = hist['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                hist['RSI'] = 100 - (100 / (1 + (gain / loss)))
+                hist['RSI'].fillna(50, inplace=True)
+                
+                rsi_val = hist['RSI'].iloc[-1]
+                trend = "UP 🟢" if hist['Close'].iloc[-1] > hist['SMA_200'].iloc[-1] else "DOWN 🔴"
+                
+                avg_vol_20 = hist['Volume'].rolling(window=20).mean().iloc[-1]
+                if avg_vol_20 > 0: vol_ratio = hist['Volume'].iloc[-1] / avg_vol_20
+        except:
+            pass # If Yahoo blocks the price fetch, we just skip the chart
 
-        def format_large_number(num):
-            if num is None or pd.isna(num): return "N/A"
-            try:
-                num = float(num)
-                if num > 1e9: return f"{num/1e9:.2f}B"
-                if num > 1e6: return f"{num/1e6:.2f}M"
-                return f"{num:.0f}"
+        signals = calculate_signals(vol_ratio, 0.15, 0.20, promoter) # Approximated growth for signal
+
+        def format_cr(num):
+            if num is None or num == "N/A": return "N/A"
+            try: return f"₹ {float(num):,.0f} Cr"
             except: return str(num)
-            
-        de_ratio = safe_get(fin_data, 'debtToEquity', None)
-        if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100 # Adjust if given as %
 
         metrics = {
-            "Symbol": ticker,
-            "Price": f"{hist['close'].iloc[-1]:.2f}",
-            "Market Cap": format_large_number(safe_get(summary, 'marketCap')),
-            "D/E Ratio": safe_fmt(de_ratio),
-            "Current Ratio": safe_fmt(safe_get(fin_data, 'currentRatio')),
-            "ROE": safe_fmt(safe_get(fin_data, 'returnOnEquity'), is_percent=True),
-            "Rev Growth": safe_fmt(rev_g, is_percent=True),
-            "Profit Growth": safe_fmt(prof_g, is_percent=True),
-            "P/E": safe_fmt(safe_get(summary, 'trailingPE')),
-            "PEG": safe_fmt(safe_get(key_stats, 'pegRatio')),
-            "EV/EBITDA": format_large_number(ebitda), # Display raw EBITDA if EV is complex
-            "RSI": f"{hist['RSI'].iloc[-1]:.2f}",
-            "RS_Rating": "N/A",
-            "Trend": "UP 🟢" if hist['close'].iloc[-1] > hist['SMA_200'].iloc[-1] else "DOWN 🔴",
-            "Inst Hold": safe_fmt(safe_get(key_stats, 'heldPercentInstitutions'), is_percent=True), 
+            "Symbol": clean_ticker,
+            "Price": f"₹ {price}" if price else "N/A",
+            "Market Cap": format_cr(mcap),
+            "D/E Ratio": de if de else "N/A",
+            "Current Ratio": "N/A", # Screener top metric varies
+            "ROE": f"{roe}%" if roe else "N/A",
+            "P/E": pe if pe else "N/A",
+            "PEG": "N/A",
+            "EV/EBITDA": format_cr(ebitda), 
+            "RSI": f"{rsi_val:.2f}",
+            "Trend": trend,
+            "Inst Hold": "Check Screener", 
             "Sector_Info": sector_ctx,
-            "News_Headlines": ["Data fetched via YahooQuery backend."],
-            "CFO": format_large_number(cfo),
-            "EBITDA": format_large_number(ebitda),
+            "CFO": format_cr(cfo),
+            "EBITDA": format_cr(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
             "Signals": signals,
-            "Sales_TTM": format_large_number(safe_get(fin_data, 'totalRevenue')),
-            "Sales_LastYr": "N/A" # Simplify to just TTM for yahooquery reliability
+            "Sales_TTM": format_cr(sales_ttm),
+            "Sales_LastYr": "N/A" 
         }
         return metrics, hist
         
     except Exception as e:
-        st.error(f"❌ YAHOOQUERY ERROR: {e}")
+        st.error(f"❌ Web Scraper Error: {e}")
         return None, None
 
 # --- AI ENGINE ---
 def analyze_stock(gemini_key_param, model_name, data):
     genai.configure(api_key=gemini_key_param)
     model = genai.GenerativeModel(model_name)
-    val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
+    val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "P/E Ratio (Growth)"
     sig = data['Signals']
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: LIVE MARKET DATA
+    DATA SOURCE: SCREENER.IN (INDIAN EQUITIES PLATFORM)
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     
     ### 🚦 QUANT SIGNAL DIAGNOSTIC
     - **Stock Readiness Score:** {sig['Final_Score']:.2f} / 3.0 (Quantitative Verdict: {sig['Verdict']})
-    - **Conflict Check:** {sig['Conflict']}
     - Volume Signal: {sig['Vol_Score']}/3 ({sig['Vol_Msg']})
-    - Operating Leverage: {sig['OpLev_Score']}/3 ({sig['OpLev_Msg']})
     
     ### 📊 GROWTH CHECK
     - **Sales (TTM):** {data['Sales_TTM']}
     
-    IMPORTANT: The "Readiness Score" is a strict mathematical baseline. 
-    **YOUR JOB is to interpret it.** - If the Score is LOW ("Ignore") but Fundamentals (CFO, ROE, Sales Trend) are STRONG, override the signal and recommend "WATCH" or "BUY".
-    - Explain WHY the score might be low (e.g., "Good fundamentals, but no volume momentum yet").
-    
     DATA: {data}
     
     FRAMEWORK:
-    1. Safety: Debt/Equity {data['D/E Ratio']}, Current Ratio {data['Current Ratio']}.
-    2. Profit: ROE {data['ROE']}, Growth {data['Profit Growth']}. Op Leverage: {sig['OpLev_Ratio']:.2f}x.
-    3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
+    1. Safety: Debt/Equity {data['D/E Ratio']}.
+    2. Profit: ROE {data['ROE']}.
+    3. Valuation: Focus on {val_focus}. P/E {data['P/E']}.
     4. Sector: Comment on sector metrics.
     5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}, Volume Surge {sig['Vol_Ratio']:.1f}x.
-    6. Management: Evaluate overall stability based on metrics.
-    7. Risks: List 2 key risks.
+    6. Management: Check Insider limits.
+    7. Risks: List 2 key risks based on the numbers.
     
     OUTPUT:
     # 🔍 Analysis based on the 7-Phase Safety & Profit Framework
@@ -295,39 +299,33 @@ def analyze_stock(gemini_key_param, model_name, data):
 
 # --- MAIN UI ---
 st.title("📈 AI Hedge Fund Terminal")
-st.caption("Institutional Grade Forensic Analysis • 7-Phase Framework")
+st.caption("Institutional Grade Forensic Analysis • Powered by Screener.in Scraper")
 
 with st.form("run_form"):
-    ticker = st.text_input("Ticker Symbol", value="COALINDIA.NS")
+    ticker = st.text_input("Indian Stock Symbol (e.g. COALINDIA, ITC, TCS)", value="COALINDIA")
     c1, c2, c3 = st.columns([1, 1, 1])
     with c2:
-        submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
+        submitted = st.form_submit_button("🚀 Run Forensic Audit", use_container_width=True)
 
 if submitted:
     if not gemini_api_key:
         st.error("⚠️ Please enter your Gemini API Key in the sidebar.")
     else:
-        with st.spinner(f"Fetching backend data for {ticker}..."):
+        with st.spinner(f"Scraping Screener.in for {ticker}..."):
             data, hist = get_market_data(ticker)
             
-            if data and hist is not None:
-                st.success("✅ DATA CONNECTION ESTABLISHED")
+            if data is not None:
+                st.success("✅ SCREENER.IN DATA EXTRACTED SUCCESSFULLY")
 
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
-                st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
+                st.caption(f"Sector: {data['Sector_Info']['Sector']} | Prices in ₹ Crores")
                 
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Market Cap", data['Market Cap'])
                 m2.metric("P/E Ratio", data['P/E'])
                 m3.metric("Debt / Equity", data['D/E Ratio'])
-                m4.metric("Current Ratio", data['Current Ratio'])
-                
-                t1, t2, t3, t4 = st.columns(4)
-                t1.metric("ROE", data['ROE'])
-                t2.metric("PEG Ratio", data['PEG'])
-                t3.metric("RSI (14)", data['RSI'])
-                t4.metric("Trend", data['Trend'])
+                m4.metric("ROE", data['ROE'])
                 
                 # FORENSIC RADAR
                 st.divider()
@@ -335,28 +333,28 @@ if submitted:
                 f1, f2, f3, f4 = st.columns(4)
                 f1.metric("Operating Cash Flow", data['CFO'])
                 f2.metric("EBITDA", data['EBITDA'])
-                f3.metric("Cash Conv.", data['CFO_to_EBITDA'])
-                f4.metric("Sales (Current)", data['Sales_TTM'])
+                f3.metric("Cash Conv.", data['CFO_to_EBITDA'], help="CFO / EBITDA. Target is > 70%")
+                f4.metric("Sales (TTM)", data['Sales_TTM'])
                 
-                # --- SIGNAL BOARD (BOTTOM) ---
+                # --- SIGNAL BOARD ---
                 st.divider()
                 sig = data['Signals']
-                st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
+                st.subheader(f"🚦 Quantitative Signal Radar")
                 
                 s1, s2, s3 = st.columns(3)
                 s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'])
-                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'])
+                s2.metric("Trend", data['Trend'], "Moving Average")
                 s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'])
                 
-                if sig['Conflict'] != "None":
-                    st.info(f"💡 **Insight:** {sig['Conflict']}")
-
                 st.divider()
-                st.subheader("📉 Technical Breakout Check")
-                st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
+                if hist is not None:
+                    st.subheader("📉 Technical Breakout Check")
+                    st.plotly_chart(plot_technical_chart(hist, ticker), use_container_width=True)
+                else:
+                    st.info("⚠️ Live chart currently unavailable. Showing fundamental analysis below.")
                 
                 st.divider()
-                st.subheader("📝 Forensic Analysis")
+                st.subheader("📝 AI Forensic Report")
                 try:
                     report = analyze_stock(gemini_api_key, selected_model, data)
                     st.markdown(report)
