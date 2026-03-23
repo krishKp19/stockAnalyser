@@ -42,7 +42,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.5 | Sales & Growth Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.6 | Strict Live Data Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -83,50 +83,6 @@ def plot_technical_chart(hist, ticker):
                       paper_bgcolor="#0e1117", plot_bgcolor="#0e1117", 
                       font=dict(color="white"), margin=dict(l=10, r=10, t=30, b=10))
     return fig
-
-# --- MOCK DATA GENERATOR ---
-def generate_mock_data(ticker):
-    """Generates realistic dummy data when Yahoo blocks the IP."""
-    dates = pd.date_range(end=datetime.today(), periods=500)
-    base_price = 400.0
-    returns = np.random.normal(0, 0.02, 500)
-    price_path = base_price * (1 + returns).cumprod()
-    
-    hist = pd.DataFrame(index=dates)
-    hist['Close'] = price_path
-    hist['Open'] = price_path * (1 + np.random.normal(0, 0.005, 500))
-    hist['High'] = hist[['Open', 'Close']].max(axis=1) * (1 + np.abs(np.random.normal(0, 0.005, 500)))
-    hist['Low'] = hist[['Open', 'Close']].min(axis=1) * (1 - np.abs(np.random.normal(0, 0.005, 500)))
-    hist['Volume'] = np.random.randint(100000, 5000000, 500)
-    
-    hist['SMA_50'] = hist['Close'].rolling(window=50).mean().fillna(base_price)
-    hist['SMA_200'] = hist['Close'].rolling(window=200).mean().fillna(base_price)
-    hist['RSI'] = 50 + np.random.normal(0, 10, 500)
-    
-    info = {
-        'sector': 'Basic Materials (Simulated)',
-        'industry': 'Other Industrial Metals',
-        'marketCap': 50000000000,
-        'debtToEquity': 85.5,
-        'currentRatio': 1.8,
-        'returnOnEquity': 0.18,
-        'revenueGrowth': 0.12,
-        'earningsGrowth': 0.30, 
-        'trailingPE': 12.5,
-        'pegRatio': 0.9,
-        'enterpriseToEbitda': 6.5,
-        'heldPercentInstitutions': 0.35,
-        'heldPercentInsiders': 0.45,
-        'operatingCashflow': 8000000000,
-        'ebitda': 10000000000,
-        'totalRevenue': 50000000000 # Mock Annual Sales
-    }
-    
-    # Mock Sales Data for v5.5
-    sales_ttm = 52000000000
-    sales_last_yr = 48000000000
-    
-    return info, hist, sales_ttm, sales_last_yr
 
 # --- SIGNAL CALCULATION LOGIC ---
 def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
@@ -178,87 +134,76 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE ---
+# --- DATA ENGINE (STRICT LIVE DATA) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
-    is_live = True
     sales_ttm = "N/A"
     sales_last_yr = "N/A"
     
     try:
         import yfinance as yf
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="2y")
-        if hist.empty: raise ValueError("Empty Data")
-        info = stock.info
-        if len(info) < 2: raise ValueError("Blocked Info")
         
-        # --- NEW: FETCH SALES DATA (v5.5) ---
+        # 1. Fetch Price History
+        hist = stock.history(period="2y")
+        if hist.empty: 
+            st.error(f"❌ Failed to fetch live price history for {ticker}. Ensure the ticker symbol is correct.")
+            return None, None
+            
+        # 2. Fetch Info Dictionary
+        info = stock.info
+        if not info or len(info) < 2: 
+            st.error(f"❌ Failed to fetch live fundamentals for {ticker}. Yahoo Finance API may be blocking the request.")
+            return None, None
+        
+        # 3. Robust Sales Data Fetching
         try:
-            # 1. Last Year Sales (Annual)
-            # income_stmt columns are usually sorted new -> old
             income = stock.income_stmt
-            if not income.empty:
+            if not income.empty and 'Total Revenue' in income.index:
                 sales_last_yr = income.loc['Total Revenue'].iloc[0]
             
-            # 2. Last 4 Quarters (TTM)
             q_income = stock.quarterly_income_stmt
-            if not q_income.empty:
-                # Sum the last 4 quarters to get TTM
+            if not q_income.empty and 'Total Revenue' in q_income.index:
                 sales_ttm = q_income.loc['Total Revenue'].iloc[:4].sum()
-        except:
-            # Fallback if financial statements are missing
+        except Exception:
             sales_ttm = info.get('totalRevenue', "N/A")
-            sales_last_yr = "N/A"
 
-    except Exception:
-        is_live = False
-        info, hist, sales_ttm, sales_last_yr = generate_mock_data(ticker)
-
-    try:
-        # Technicals
-        if is_live:
-            try:
-                import pandas_ta as ta
-                hist['RSI'] = ta.rsi(hist['Close'], length=14)
-                hist['SMA_50'] = ta.sma(hist['Close'], length=50)
-                hist['SMA_200'] = ta.sma(hist['Close'], length=200)
-            except ImportError:
-                hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
-                hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
-                hist['RSI'] = 50 
+        # 4. Calculate Technicals
+        try:
+            import pandas_ta as ta
+            hist['RSI'] = ta.rsi(hist['Close'], length=14)
+            hist['SMA_50'] = ta.sma(hist['Close'], length=50)
+            hist['SMA_200'] = ta.sma(hist['Close'], length=200)
+        except ImportError:
+            hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
+            hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
+            hist['RSI'] = 50 
         
         # Calculate Volume Surge Data
         avg_vol_20 = hist['Volume'].rolling(window=20).mean().iloc[-1]
         current_vol = hist['Volume'].iloc[-1]
         vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
-
         latest = hist.iloc[-1]
         
-        # Benchmark RS
-        rs_metric = "N/A (Mode: Sim)"
-        if is_live:
-            try:
-                import yfinance as yf
-                benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
-                bench = yf.Ticker(benchmark_symbol)
-                bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
-                if len(hist) > 126 and len(bench_hist) > 126:
-                    stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
-                    bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
-                    rs_value = (stock_6m - bench_6m) * 100
-                    rs_metric = f"{rs_value:+.2f}%"
-            except: pass
+        # 5. Benchmark RS
+        rs_metric = "N/A"
+        try:
+            benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
+            bench = yf.Ticker(benchmark_symbol)
+            bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
+            if len(hist) > 126 and len(bench_hist) > 126:
+                stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
+                bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
+                rs_value = (stock_6m - bench_6m) * 100
+                rs_metric = f"{rs_value:+.2f}%"
+        except: pass
 
-        # News
-        news_headlines = ["Live news unavailable in Simulation Mode."]
-        if is_live:
-            try:
-                import yfinance as yf
-                stock_for_news = yf.Ticker(ticker)
-                news = stock_for_news.news
-                news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
-            except: pass
+        # 6. News
+        news_headlines = ["No recent news."]
+        try:
+            news = stock.news
+            news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
+        except: pass
 
         sector_ctx = get_sector_context(info)
         
@@ -287,9 +232,21 @@ def get_market_data(ticker):
         # Calculate Signals
         signals = calculate_signals(vol_ratio, rev_g, prof_g, prom_hold)
 
-        # Forensic: Cash Flow
-        cfo = info.get('operatingCashflow', None)
-        ebitda = info.get('ebitda', None)
+        # 7. Robust Forensic Cash Flow Fetching
+        cfo = info.get('operatingCashflow')
+        if cfo is None:
+            try:
+                cfo = stock.cash_flow.loc['Operating Cash Flow'].iloc[0]
+            except Exception:
+                cfo = None
+                
+        ebitda = info.get('ebitda')
+        if ebitda is None:
+            try:
+                ebitda = stock.income_stmt.loc['EBITDA'].iloc[0]
+            except Exception:
+                ebitda = None
+
         cfo_to_ebitda = "N/A"
         if cfo and ebitda and ebitda != 0:
             cfo_to_ebitda = f"{(cfo / ebitda):.0%}"
@@ -305,24 +262,24 @@ def get_market_data(ticker):
             "Profit Growth": safe_fmt(prof_g, is_percent=True),
             "P/E": safe_fmt(info.get('trailingPE', None)),
             "PEG": safe_fmt(info.get('pegRatio', None)),
-            "EV/EBITDA": safe_fmt(info.get('enterpriseToEbitda', None)),
+            "EV/EBITDA": safe_fmt(ebitda),
             "RSI": f"{latest['RSI']:.2f}",
             "RS_Rating": rs_metric,
             "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
             "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
             "Sector_Info": sector_ctx,
             "News_Headlines": news_headlines,
-            "Is_Live": is_live,
             "CFO": safe_fmt(cfo),
             "EBITDA": safe_fmt(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
             "Signals": signals,
-            # Sales Data
             "Sales_TTM": format_large_number(sales_ttm),
             "Sales_LastYr": format_large_number(sales_last_yr)
         }
         return metrics, hist
+        
     except Exception as e:
+        st.error(f"❌ CRITICAL API ERROR: Failed to connect to live market data feed. Details: {e}")
         return None, None
 
 # --- AI ENGINE ---
@@ -334,7 +291,7 @@ def analyze_stock(api_key, model_name, data):
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: {'LIVE MARKET DATA' if data['Is_Live'] else 'SIMULATED SCENARIO (DEMO MODE)'}
+    DATA SOURCE: LIVE MARKET DATA
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     
     ### 🚦 QUANT SIGNAL DIAGNOSTIC
@@ -386,14 +343,11 @@ if submitted:
     if not api_key:
         st.error("⚠️ Enter API Key")
     else:
-        with st.spinner(f"Analyzing {ticker}..."):
+        with st.spinner(f"Establishing live connection and analyzing {ticker}..."):
             data, hist = get_market_data(ticker)
             
             if data and hist is not None:
-                if not data['Is_Live']:
-                    st.warning("⚠️ MARKET DATA CONNECTION LIMITED: Switched to SIMULATION MODE for demonstration.")
-                else:
-                    st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
+                st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
 
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
