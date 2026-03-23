@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import requests
 import time
 from datetime import datetime, timedelta
 
@@ -44,7 +43,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.6.1 | Anti-Rate-Limit Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.6.2 | Native YF Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -136,7 +135,7 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE (WITH BROWSER SPOOFING) ---
+# --- DATA ENGINE (NATIVE YFINANCE WITH SLEEPS) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     sales_ttm = "N/A"
@@ -145,16 +144,8 @@ def get_market_data(ticker):
     try:
         import yfinance as yf
         
-        # BROWSER SPOOFING SESSION TO BYPASS 429 ERRORS
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive"
-        })
-
-        stock = yf.Ticker(ticker, session=session)
+        # Let yfinance handle the session internally using its new curl_cffi method
+        stock = yf.Ticker(ticker)
         
         # 1. Fetch Price History
         hist = stock.history(period="2y")
@@ -205,7 +196,7 @@ def get_market_data(ticker):
         rs_metric = "N/A"
         try:
             benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
-            bench = yf.Ticker(benchmark_symbol, session=session)
+            bench = yf.Ticker(benchmark_symbol)
             bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
             if len(hist) > 126 and len(bench_hist) > 126:
                 stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
