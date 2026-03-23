@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import requests
 from datetime import datetime
 
 # --- PAGE CONFIGURATION ---
@@ -19,17 +18,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR (SECURE KEY INPUTS) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🔑 Settings")
     
-    # 1. Secure input for Gemini API Key
+    # Gemini API Only
     gemini_api_key = st.text_input("Gemini API Key", type="password")
     st.markdown("[Get Free Gemini Key](https://aistudio.google.com/)")
-    
-    # 2. Secure input for FMP API Key
-    fmp_api_key = st.text_input("FMP API Key (Data Feed)", type="password")
-    st.markdown("[Get Free FMP Key](https://site.financialmodelingprep.com/)")
     
     st.divider()
     
@@ -50,7 +45,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. COALINDIA.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v6.1 | Secure Enterprise Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v6.2 | YahooQuery Engine (Keyless)</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(sector, industry):
@@ -76,14 +71,14 @@ def plot_technical_chart(hist, ticker):
                         vertical_spacing=0.03, subplot_titles=(f'{ticker} Price', 'Volume'), 
                         row_heights=[0.7, 0.3])
 
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'],
-                                 low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=hist.index, open=hist['open'], high=hist['high'],
+                                 low=hist['low'], close=hist['close'], name='Price'), row=1, col=1)
     
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_50'], line=dict(color='orange', width=1), name='50 DMA'), row=1, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_200'], line=dict(color='blue', width=2), name='200 DMA'), row=1, col=1)
 
-    colors = ['#00FF00' if row['Open'] - row['Close'] >= 0 else '#FF0000' for index, row in hist.iterrows()]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
+    colors = ['#00FF00' if row['open'] - row['close'] >= 0 else '#FF0000' for index, row in hist.iterrows()]
+    fig.add_trace(go.Bar(x=hist.index, y=hist['volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
     fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_dark",
                       paper_bgcolor="#0e1117", plot_bgcolor="#0e1117", 
@@ -133,81 +128,76 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE (ENTERPRISE FMP API) ---
+# --- DATA ENGINE (YAHOO QUERY) ---
 @st.cache_data(ttl=3600)
-def get_market_data(ticker, fmp_key_param):
+def get_market_data(ticker):
     try:
-        base_url = "https://financialmodelingprep.com/api/v3"
+        from yahooquery import Ticker
+        stock = Ticker(ticker)
         
-        # 1. Fetch Profile
-        profile_res = requests.get(f"{base_url}/profile/{ticker}?apikey={fmp_key_param}").json()
-        if not profile_res or "Error Message" in profile_res:
-            st.error(f"❌ Failed to find {ticker}. Check the symbol or ensure your FMP API key is correct.")
-            return None, None
-        profile = profile_res[0]
+        # Helper to safely extract data from yahooquery's nested dicts
+        def safe_get(module_data, key, default=None):
+            if isinstance(module_data, dict) and ticker in module_data:
+                if isinstance(module_data[ticker], dict):
+                    return module_data[ticker].get(key, default)
+            return default
 
-        # 2. Fetch Key Metrics (TTM)
-        metrics_res = requests.get(f"{base_url}/key-metrics-ttm/{ticker}?apikey={fmp_key_param}").json()
-        ttm_metrics = metrics_res[0] if metrics_res else {}
-
-        # 3. Fetch Income Statement (Annual for Sales/EBITDA/Growth)
-        income_res = requests.get(f"{base_url}/income-statement/{ticker}?limit=2&apikey={fmp_key_param}").json()
-        income_curr = income_res[0] if len(income_res) > 0 else {}
-        income_prev = income_res[1] if len(income_res) > 1 else {}
-
-        # 4. Fetch Cash Flow Statement (Annual)
-        cf_res = requests.get(f"{base_url}/cash-flow-statement/{ticker}?limit=1&apikey={fmp_key_param}").json()
-        cf_curr = cf_res[0] if cf_res else {}
-
-        # 5. Fetch Historical Price Data
-        hist_res = requests.get(f"{base_url}/historical-price-full/{ticker}?timeseries=500&apikey={fmp_key_param}").json()
-        if 'historical' not in hist_res:
-            st.error(f"❌ Failed to fetch historical prices for {ticker}.")
+        # 1. Fetch History
+        hist = stock.history(period="2y")
+        if isinstance(hist, dict) or hist.empty:
+            st.error(f"❌ Failed to fetch price history for {ticker}. Check the symbol.")
             return None, None
             
-        # Process History into Pandas DataFrame
-        hist_df = pd.DataFrame(hist_res['historical'])
-        hist_df['date'] = pd.to_datetime(hist_df['date'])
-        hist_df.set_index('date', inplace=True)
-        hist_df.sort_index(ascending=True, inplace=True)
-        hist_df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+        # YahooQuery returns a multi-index (symbol, date). We flatten it.
+        if isinstance(hist.index, pd.MultiIndex):
+            hist = hist.xs(ticker)
 
-        # Technicals
-        hist_df['SMA_50'] = hist_df['Close'].rolling(window=50).mean()
-        hist_df['SMA_200'] = hist_df['Close'].rolling(window=200).mean()
+        # 2. Fetch Fundamentals
+        profile = stock.asset_profile
+        summary = stock.summary_detail
+        fin_data = stock.financial_data
+        key_stats = stock.key_stats
+
+        if isinstance(profile, dict) and isinstance(profile.get(ticker), str):
+            st.error(f"❌ API Error for {ticker}: {profile.get(ticker)}")
+            return None, None
+
+        # 3. Technicals
+        hist['SMA_50'] = hist['close'].rolling(window=50).mean()
+        hist['SMA_200'] = hist['close'].rolling(window=200).mean()
         
-        # Simple RSI calculation
-        delta = hist_df['Close'].diff()
+        # RSI
+        delta = hist['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        hist_df['RSI'] = 100 - (100 / (1 + rs))
-        hist_df['RSI'].fillna(50, inplace=True)
+        hist['RSI'] = 100 - (100 / (1 + rs))
+        hist['RSI'].fillna(50, inplace=True)
 
         # Volume Surge Data
-        avg_vol_20 = hist_df['Volume'].rolling(window=20).mean().iloc[-1]
-        current_vol = hist_df['Volume'].iloc[-1]
+        avg_vol_20 = hist['volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = hist['volume'].iloc[-1]
         vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
 
         # Calculations & Formatting
-        sector = profile.get('sector', 'Unknown')
-        industry = profile.get('industry', 'Unknown')
+        sector = safe_get(profile, 'sector', 'Unknown')
+        industry = safe_get(profile, 'industry', 'Unknown')
         sector_ctx = get_sector_context(sector, industry)
 
-        rev_g = income_curr.get('revenue', 0) / income_prev.get('revenue', 1) - 1 if income_prev.get('revenue') else 0
-        prof_g = income_curr.get('netIncome', 0) / income_prev.get('netIncome', 1) - 1 if income_prev.get('netIncome') else 0
-        prom_hold = 0.45 # Default mid-range for free tier
+        rev_g = safe_get(fin_data, 'revenueGrowth', 0)
+        prof_g = safe_get(fin_data, 'earningsGrowth', 0)
+        prom_hold = safe_get(key_stats, 'heldPercentInsiders', 0)
         
         signals = calculate_signals(vol_ratio, rev_g, prof_g, prom_hold)
 
-        cfo = cf_curr.get('operatingCashFlow', None)
-        ebitda = income_curr.get('ebitda', None)
+        cfo = safe_get(fin_data, 'operatingCashflow', None)
+        ebitda = safe_get(fin_data, 'ebitda', None)
         cfo_to_ebitda = "N/A"
         if cfo and ebitda and ebitda != 0:
             cfo_to_ebitda = f"{(cfo / ebitda):.0%}"
 
         def safe_fmt(val, is_percent=False):
-            if val is None or val == "N/A": return "N/A"
+            if val is None or val == "N/A" or pd.isna(val): return "N/A"
             try:
                 val = float(val)
                 if is_percent: return f"{val * 100:.2f}%"
@@ -216,43 +206,46 @@ def get_market_data(ticker, fmp_key_param):
                 return str(val)
 
         def format_large_number(num):
-            if num is None: return "N/A"
+            if num is None or pd.isna(num): return "N/A"
             try:
                 num = float(num)
                 if num > 1e9: return f"{num/1e9:.2f}B"
                 if num > 1e6: return f"{num/1e6:.2f}M"
                 return f"{num:.0f}"
             except: return str(num)
+            
+        de_ratio = safe_get(fin_data, 'debtToEquity', None)
+        if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100 # Adjust if given as %
 
         metrics = {
             "Symbol": ticker,
-            "Price": f"{profile.get('price', 0):.2f}",
-            "Market Cap": format_large_number(profile.get('mktCap')),
-            "D/E Ratio": safe_fmt(ttm_metrics.get('debtToEquityTTM')),
-            "Current Ratio": safe_fmt(ttm_metrics.get('currentRatioTTM')),
-            "ROE": safe_fmt(ttm_metrics.get('roeTTM'), is_percent=True),
+            "Price": f"{hist['close'].iloc[-1]:.2f}",
+            "Market Cap": format_large_number(safe_get(summary, 'marketCap')),
+            "D/E Ratio": safe_fmt(de_ratio),
+            "Current Ratio": safe_fmt(safe_get(fin_data, 'currentRatio')),
+            "ROE": safe_fmt(safe_get(fin_data, 'returnOnEquity'), is_percent=True),
             "Rev Growth": safe_fmt(rev_g, is_percent=True),
             "Profit Growth": safe_fmt(prof_g, is_percent=True),
-            "P/E": safe_fmt(ttm_metrics.get('peRatioTTM')),
-            "PEG": safe_fmt(ttm_metrics.get('pegRatioTTM')),
-            "EV/EBITDA": safe_fmt(ttm_metrics.get('enterpriseValueMultipleTTM')),
-            "RSI": f"{hist_df['RSI'].iloc[-1]:.2f}",
-            "RS_Rating": "N/A (FMP Backend)",
-            "Trend": "UP 🟢" if hist_df['Close'].iloc[-1] > hist_df['SMA_200'].iloc[-1] else "DOWN 🔴",
-            "Inst Hold": "Data Restricted", 
+            "P/E": safe_fmt(safe_get(summary, 'trailingPE')),
+            "PEG": safe_fmt(safe_get(key_stats, 'pegRatio')),
+            "EV/EBITDA": format_large_number(ebitda), # Display raw EBITDA if EV is complex
+            "RSI": f"{hist['RSI'].iloc[-1]:.2f}",
+            "RS_Rating": "N/A",
+            "Trend": "UP 🟢" if hist['close'].iloc[-1] > hist['SMA_200'].iloc[-1] else "DOWN 🔴",
+            "Inst Hold": safe_fmt(safe_get(key_stats, 'heldPercentInstitutions'), is_percent=True), 
             "Sector_Info": sector_ctx,
-            "News_Headlines": ["News fetch optimization applied."],
+            "News_Headlines": ["Data fetched via YahooQuery backend."],
             "CFO": format_large_number(cfo),
             "EBITDA": format_large_number(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
             "Signals": signals,
-            "Sales_TTM": format_large_number(income_curr.get('revenue')),
-            "Sales_LastYr": format_large_number(income_prev.get('revenue'))
+            "Sales_TTM": format_large_number(safe_get(fin_data, 'totalRevenue')),
+            "Sales_LastYr": "N/A" # Simplify to just TTM for yahooquery reliability
         }
-        return metrics, hist_df
+        return metrics, hist
         
     except Exception as e:
-        st.error(f"❌ API INTEGRATION ERROR: {e}")
+        st.error(f"❌ YAHOOQUERY ERROR: {e}")
         return None, None
 
 # --- AI ENGINE ---
@@ -264,7 +257,7 @@ def analyze_stock(gemini_key_param, model_name, data):
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: FINANCIAL MODELING PREP (INSTITUTIONAL API)
+    DATA SOURCE: LIVE MARKET DATA
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     
     ### 🚦 QUANT SIGNAL DIAGNOSTIC
@@ -275,7 +268,6 @@ def analyze_stock(gemini_key_param, model_name, data):
     
     ### 📊 GROWTH CHECK
     - **Sales (TTM):** {data['Sales_TTM']}
-    - **Sales (Last Year):** {data['Sales_LastYr']}
     
     IMPORTANT: The "Readiness Score" is a strict mathematical baseline. 
     **YOUR JOB is to interpret it.** - If the Score is LOW ("Ignore") but Fundamentals (CFO, ROE, Sales Trend) are STRONG, override the signal and recommend "WATCH" or "BUY".
@@ -314,21 +306,19 @@ with st.form("run_form"):
 if submitted:
     if not gemini_api_key:
         st.error("⚠️ Please enter your Gemini API Key in the sidebar.")
-    elif not fmp_api_key:
-        st.error("⚠️ Please enter your FMP API Key in the sidebar to fetch market data.")
     else:
-        with st.spinner(f"Connecting to FMP Enterprise API for {ticker}..."):
-            data, hist = get_market_data(ticker, fmp_api_key)
+        with st.spinner(f"Fetching backend data for {ticker}..."):
+            data, hist = get_market_data(ticker)
             
             if data and hist is not None:
-                st.success("✅ ENTERPRISE DATA CONNECTION ESTABLISHED")
+                st.success("✅ DATA CONNECTION ESTABLISHED")
 
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
                 st.caption(f"Sector: {data['Sector_Info']['Sector']} | {data['Sector_Info']['Industry']}")
                 
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("EV / EBITDA", data['EV/EBITDA'])
+                m1.metric("Market Cap", data['Market Cap'])
                 m2.metric("P/E Ratio", data['P/E'])
                 m3.metric("Debt / Equity", data['D/E Ratio'])
                 m4.metric("Current Ratio", data['Current Ratio'])

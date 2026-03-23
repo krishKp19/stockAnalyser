@@ -6,3 +6,4 @@ pandas_ta
 plotly
 numpy
 lxml
+yahooquery
