@@ -2,6 +2,8 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
+import requests
+import time
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIGURATION ---
@@ -42,7 +44,7 @@ with st.sidebar:
     st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.6 | Strict Live Data Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v5.6.1 | Anti-Rate-Limit Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
 def get_sector_context(info):
@@ -134,7 +136,7 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE (STRICT LIVE DATA) ---
+# --- DATA ENGINE (WITH BROWSER SPOOFING) ---
 @st.cache_data(ttl=3600)
 def get_market_data(ticker):
     sales_ttm = "N/A"
@@ -142,7 +144,17 @@ def get_market_data(ticker):
     
     try:
         import yfinance as yf
-        stock = yf.Ticker(ticker)
+        
+        # BROWSER SPOOFING SESSION TO BYPASS 429 ERRORS
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive"
+        })
+
+        stock = yf.Ticker(ticker, session=session)
         
         # 1. Fetch Price History
         hist = stock.history(period="2y")
@@ -150,11 +162,15 @@ def get_market_data(ticker):
             st.error(f"❌ Failed to fetch live price history for {ticker}. Ensure the ticker symbol is correct.")
             return None, None
             
+        time.sleep(0.5) # Gentle pause to prevent rate limiting
+            
         # 2. Fetch Info Dictionary
         info = stock.info
         if not info or len(info) < 2: 
             st.error(f"❌ Failed to fetch live fundamentals for {ticker}. Yahoo Finance API may be blocking the request.")
             return None, None
+            
+        time.sleep(0.5) # Gentle pause
         
         # 3. Robust Sales Data Fetching
         try:
@@ -189,7 +205,7 @@ def get_market_data(ticker):
         rs_metric = "N/A"
         try:
             benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
-            bench = yf.Ticker(benchmark_symbol)
+            bench = yf.Ticker(benchmark_symbol, session=session)
             bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
             if len(hist) > 126 and len(bench_hist) > 126:
                 stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
