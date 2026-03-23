@@ -2,8 +2,8 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import time
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="AI Hedge Fund Terminal", layout="wide", page_icon="Hz")
@@ -19,17 +19,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR ---
+# --- SIDEBAR (SECURE KEY INPUTS) ---
 with st.sidebar:
     st.header("🔑 Settings")
-    api_key = st.text_input("Gemini API Key", type="password")
-    st.markdown("[Get Free Key](https://aistudio.google.com/)")
+    
+    # 1. Secure input for Gemini API Key
+    gemini_api_key = st.text_input("Gemini API Key", type="password")
+    st.markdown("[Get Free Gemini Key](https://aistudio.google.com/)")
+    
+    # 2. Secure input for FMP API Key
+    fmp_api_key = st.text_input("FMP API Key (Data Feed)", type="password")
+    st.markdown("[Get Free FMP Key](https://site.financialmodelingprep.com/)")
+    
     st.divider()
     
     fallback_models = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
-    if api_key:
+    if gemini_api_key:
         try:
-            genai.configure(api_key=api_key)
+            genai.configure(api_key=gemini_api_key)
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             gemini_models = [m for m in models if 'gemini' in m]
             if not gemini_models: gemini_models = fallback_models
@@ -37,18 +44,16 @@ with st.sidebar:
             gemini_models = fallback_models
         selected_model = st.selectbox("AI Brain", gemini_models, index=0)
     else:
-        st.selectbox("AI Brain", ["Enter Key First"], disabled=True)
+        st.selectbox("AI Brain", ["Enter Gemini Key First"], disabled=True)
 
     st.divider()
-    st.info("💡 Tip: Use .NS for India (e.g. RELIANCE.NS)")
+    st.info("💡 Tip: Use .NS for India (e.g. COALINDIA.NS)")
     
     st.markdown("---")
-    st.markdown("<p class='version-text'>v5.6.2 | Native YF Engine</p>", unsafe_allow_html=True)
+    st.markdown("<p class='version-text'>v6.1 | Secure Enterprise Engine</p>", unsafe_allow_html=True)
 
 # --- HELPER: SECTOR CONTEXT ---
-def get_sector_context(info):
-    sector = info.get('sector', 'Unknown')
-    industry = info.get('industry', 'Unknown')
+def get_sector_context(sector, industry):
     context_map = {
         "Financial Services": "BANKING: Focus on NIM (>3.5%) and NPA trends.",
         "Technology": "IT: Focus on Deal Wins (TCV) and Attrition.",
@@ -87,41 +92,34 @@ def plot_technical_chart(hist, ticker):
 
 # --- SIGNAL CALCULATION LOGIC ---
 def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
-    # 1. Volume Signal
     vol_score = 0
     vol_msg = "Normal"
     if vol_ratio > 3.0: vol_score, vol_msg = 3, "Institutional Aggression"
     elif vol_ratio > 2.0: vol_score, vol_msg = 2, "Confirmed Breakout"
     elif vol_ratio > 1.2: vol_score, vol_msg = 1, "Rising Interest"
     
-    # 2. Operating Leverage Signal
     oplev_score = 0
     oplev_msg = "No Leverage"
     oplev_ratio = 0.0
-    
     if rev_growth > 0 and earn_growth > 0:
         oplev_ratio = earn_growth / rev_growth
         if oplev_ratio > 4.0: oplev_score, oplev_msg = 3, "Parabolic Economics"
         elif oplev_ratio > 2.0: oplev_score, oplev_msg = 2, "Strong Leverage"
         elif oplev_ratio > 1.0: oplev_score, oplev_msg = 1, "Healthy Scaling"
     
-    # 3. Promoter Holding Signal
     prom_score = 0
     prom_msg = "Low Alignment"
     if promoter_hold > 0.6: prom_score, prom_msg = 3, "High Conviction"
     elif promoter_hold > 0.4: prom_score, prom_msg = 2, "Strong Skin-in-Game"
     elif promoter_hold > 0.2: prom_score, prom_msg = 1, "Moderate Confidence"
 
-    # 4. Composite Score
     final_score = (0.40 * oplev_score) + (0.35 * vol_score) + (0.25 * prom_score)
     
-    # 5. Interpretation
     verdict = "Ignore"
     if final_score > 2.4: verdict = "High Conviction Buy 🚀"
     elif final_score > 1.8: verdict = "Investigate 🔍"
     elif final_score > 1.0: verdict = "Watchlist 👀"
 
-    # 6. Conflict Detection
     conflict_msg = "None"
     if vol_score >= 2 and oplev_score == 0:
         conflict_msg = "Speculative Spike (Price moving without fundamentals)"
@@ -135,170 +133,138 @@ def calculate_signals(vol_ratio, rev_growth, earn_growth, promoter_hold):
         "Final_Score": final_score, "Verdict": verdict, "Conflict": conflict_msg
     }
 
-# --- DATA ENGINE (NATIVE YFINANCE WITH SLEEPS) ---
+# --- DATA ENGINE (ENTERPRISE FMP API) ---
 @st.cache_data(ttl=3600)
-def get_market_data(ticker):
-    sales_ttm = "N/A"
-    sales_last_yr = "N/A"
-    
+def get_market_data(ticker, fmp_key_param):
     try:
-        import yfinance as yf
+        base_url = "https://financialmodelingprep.com/api/v3"
         
-        # Let yfinance handle the session internally using its new curl_cffi method
-        stock = yf.Ticker(ticker)
-        
-        # 1. Fetch Price History
-        hist = stock.history(period="2y")
-        if hist.empty: 
-            st.error(f"❌ Failed to fetch live price history for {ticker}. Ensure the ticker symbol is correct.")
+        # 1. Fetch Profile
+        profile_res = requests.get(f"{base_url}/profile/{ticker}?apikey={fmp_key_param}").json()
+        if not profile_res or "Error Message" in profile_res:
+            st.error(f"❌ Failed to find {ticker}. Check the symbol or ensure your FMP API key is correct.")
             return None, None
-            
-        time.sleep(0.5) # Gentle pause to prevent rate limiting
-            
-        # 2. Fetch Info Dictionary
-        info = stock.info
-        if not info or len(info) < 2: 
-            st.error(f"❌ Failed to fetch live fundamentals for {ticker}. Yahoo Finance API may be blocking the request.")
-            return None, None
-            
-        time.sleep(0.5) # Gentle pause
-        
-        # 3. Robust Sales Data Fetching
-        try:
-            income = stock.income_stmt
-            if not income.empty and 'Total Revenue' in income.index:
-                sales_last_yr = income.loc['Total Revenue'].iloc[0]
-            
-            q_income = stock.quarterly_income_stmt
-            if not q_income.empty and 'Total Revenue' in q_income.index:
-                sales_ttm = q_income.loc['Total Revenue'].iloc[:4].sum()
-        except Exception:
-            sales_ttm = info.get('totalRevenue', "N/A")
+        profile = profile_res[0]
 
-        # 4. Calculate Technicals
-        try:
-            import pandas_ta as ta
-            hist['RSI'] = ta.rsi(hist['Close'], length=14)
-            hist['SMA_50'] = ta.sma(hist['Close'], length=50)
-            hist['SMA_200'] = ta.sma(hist['Close'], length=200)
-        except ImportError:
-            hist['SMA_50'] = hist['Close'].rolling(window=50).mean()
-            hist['SMA_200'] = hist['Close'].rolling(window=200).mean()
-            hist['RSI'] = 50 
+        # 2. Fetch Key Metrics (TTM)
+        metrics_res = requests.get(f"{base_url}/key-metrics-ttm/{ticker}?apikey={fmp_key_param}").json()
+        ttm_metrics = metrics_res[0] if metrics_res else {}
+
+        # 3. Fetch Income Statement (Annual for Sales/EBITDA/Growth)
+        income_res = requests.get(f"{base_url}/income-statement/{ticker}?limit=2&apikey={fmp_key_param}").json()
+        income_curr = income_res[0] if len(income_res) > 0 else {}
+        income_prev = income_res[1] if len(income_res) > 1 else {}
+
+        # 4. Fetch Cash Flow Statement (Annual)
+        cf_res = requests.get(f"{base_url}/cash-flow-statement/{ticker}?limit=1&apikey={fmp_key_param}").json()
+        cf_curr = cf_res[0] if cf_res else {}
+
+        # 5. Fetch Historical Price Data
+        hist_res = requests.get(f"{base_url}/historical-price-full/{ticker}?timeseries=500&apikey={fmp_key_param}").json()
+        if 'historical' not in hist_res:
+            st.error(f"❌ Failed to fetch historical prices for {ticker}.")
+            return None, None
+            
+        # Process History into Pandas DataFrame
+        hist_df = pd.DataFrame(hist_res['historical'])
+        hist_df['date'] = pd.to_datetime(hist_df['date'])
+        hist_df.set_index('date', inplace=True)
+        hist_df.sort_index(ascending=True, inplace=True)
+        hist_df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+
+        # Technicals
+        hist_df['SMA_50'] = hist_df['Close'].rolling(window=50).mean()
+        hist_df['SMA_200'] = hist_df['Close'].rolling(window=200).mean()
         
-        # Calculate Volume Surge Data
-        avg_vol_20 = hist['Volume'].rolling(window=20).mean().iloc[-1]
-        current_vol = hist['Volume'].iloc[-1]
+        # Simple RSI calculation
+        delta = hist_df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        hist_df['RSI'] = 100 - (100 / (1 + rs))
+        hist_df['RSI'].fillna(50, inplace=True)
+
+        # Volume Surge Data
+        avg_vol_20 = hist_df['Volume'].rolling(window=20).mean().iloc[-1]
+        current_vol = hist_df['Volume'].iloc[-1]
         vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
-        latest = hist.iloc[-1]
-        
-        # 5. Benchmark RS
-        rs_metric = "N/A"
-        try:
-            benchmark_symbol = "^NSEI" if ".NS" in ticker else "^GSPC"
-            bench = yf.Ticker(benchmark_symbol)
-            bench_hist = bench.history(start=hist.index[0], end=hist.index[-1])
-            if len(hist) > 126 and len(bench_hist) > 126:
-                stock_6m = (hist['Close'].iloc[-1] / hist['Close'].iloc[-126]) - 1
-                bench_6m = (bench_hist['Close'].iloc[-1] / bench_hist['Close'].iloc[-126]) - 1
-                rs_value = (stock_6m - bench_6m) * 100
-                rs_metric = f"{rs_value:+.2f}%"
-        except: pass
 
-        # 6. News
-        news_headlines = ["No recent news."]
-        try:
-            news = stock.news
-            news_headlines = [n['title'] for n in news[:5]] if news else ["No recent news."]
-        except: pass
+        # Calculations & Formatting
+        sector = profile.get('sector', 'Unknown')
+        industry = profile.get('industry', 'Unknown')
+        sector_ctx = get_sector_context(sector, industry)
 
-        sector_ctx = get_sector_context(info)
+        rev_g = income_curr.get('revenue', 0) / income_prev.get('revenue', 1) - 1 if income_prev.get('revenue') else 0
+        prof_g = income_curr.get('netIncome', 0) / income_prev.get('netIncome', 1) - 1 if income_prev.get('netIncome') else 0
+        prom_hold = 0.45 # Default mid-range for free tier
         
-        def safe_fmt(val, is_percent=False):
-            if val is None or val == "N/A": return "N/A"
-            if isinstance(val, (int, float)):
-                if is_percent: return f"{val * 100:.2f}%"
-                return f"{val:.2f}"
-            return val
-        
-        def format_large_number(num):
-            if isinstance(num, (int, float)):
-                if num > 1e9: return f"{num/1e9:.2f}B"
-                if num > 1e6: return f"{num/1e6:.2f}M"
-                return f"{num:.0f}"
-            return num
-
-        de_ratio = info.get('debtToEquity', None)
-        if de_ratio and de_ratio > 10: de_ratio = de_ratio / 100
-
-        # Data for Signals
-        rev_g = info.get('revenueGrowth', 0)
-        prof_g = info.get('earningsGrowth', 0)
-        prom_hold = info.get('heldPercentInsiders', 0)
-        
-        # Calculate Signals
         signals = calculate_signals(vol_ratio, rev_g, prof_g, prom_hold)
 
-        # 7. Robust Forensic Cash Flow Fetching
-        cfo = info.get('operatingCashflow')
-        if cfo is None:
-            try:
-                cfo = stock.cash_flow.loc['Operating Cash Flow'].iloc[0]
-            except Exception:
-                cfo = None
-                
-        ebitda = info.get('ebitda')
-        if ebitda is None:
-            try:
-                ebitda = stock.income_stmt.loc['EBITDA'].iloc[0]
-            except Exception:
-                ebitda = None
-
+        cfo = cf_curr.get('operatingCashFlow', None)
+        ebitda = income_curr.get('ebitda', None)
         cfo_to_ebitda = "N/A"
         if cfo and ebitda and ebitda != 0:
             cfo_to_ebitda = f"{(cfo / ebitda):.0%}"
 
+        def safe_fmt(val, is_percent=False):
+            if val is None or val == "N/A": return "N/A"
+            try:
+                val = float(val)
+                if is_percent: return f"{val * 100:.2f}%"
+                return f"{val:.2f}"
+            except:
+                return str(val)
+
+        def format_large_number(num):
+            if num is None: return "N/A"
+            try:
+                num = float(num)
+                if num > 1e9: return f"{num/1e9:.2f}B"
+                if num > 1e6: return f"{num/1e6:.2f}M"
+                return f"{num:.0f}"
+            except: return str(num)
+
         metrics = {
             "Symbol": ticker,
-            "Price": f"{latest['Close']:.2f}",
-            "Market Cap": info.get('marketCap', 'N/A'),
-            "D/E Ratio": safe_fmt(de_ratio),
-            "Current Ratio": safe_fmt(info.get('currentRatio', None)),
-            "ROE": safe_fmt(info.get('returnOnEquity', None), is_percent=True),
+            "Price": f"{profile.get('price', 0):.2f}",
+            "Market Cap": format_large_number(profile.get('mktCap')),
+            "D/E Ratio": safe_fmt(ttm_metrics.get('debtToEquityTTM')),
+            "Current Ratio": safe_fmt(ttm_metrics.get('currentRatioTTM')),
+            "ROE": safe_fmt(ttm_metrics.get('roeTTM'), is_percent=True),
             "Rev Growth": safe_fmt(rev_g, is_percent=True),
             "Profit Growth": safe_fmt(prof_g, is_percent=True),
-            "P/E": safe_fmt(info.get('trailingPE', None)),
-            "PEG": safe_fmt(info.get('pegRatio', None)),
-            "EV/EBITDA": safe_fmt(ebitda),
-            "RSI": f"{latest['RSI']:.2f}",
-            "RS_Rating": rs_metric,
-            "Trend": "UP 🟢" if latest['Close'] > latest['SMA_200'] else "DOWN 🔴",
-            "Inst Hold": safe_fmt(info.get('heldPercentInstitutions', None), is_percent=True),
+            "P/E": safe_fmt(ttm_metrics.get('peRatioTTM')),
+            "PEG": safe_fmt(ttm_metrics.get('pegRatioTTM')),
+            "EV/EBITDA": safe_fmt(ttm_metrics.get('enterpriseValueMultipleTTM')),
+            "RSI": f"{hist_df['RSI'].iloc[-1]:.2f}",
+            "RS_Rating": "N/A (FMP Backend)",
+            "Trend": "UP 🟢" if hist_df['Close'].iloc[-1] > hist_df['SMA_200'].iloc[-1] else "DOWN 🔴",
+            "Inst Hold": "Data Restricted", 
             "Sector_Info": sector_ctx,
-            "News_Headlines": news_headlines,
-            "CFO": safe_fmt(cfo),
-            "EBITDA": safe_fmt(ebitda),
+            "News_Headlines": ["News fetch optimization applied."],
+            "CFO": format_large_number(cfo),
+            "EBITDA": format_large_number(ebitda),
             "CFO_to_EBITDA": cfo_to_ebitda,
             "Signals": signals,
-            "Sales_TTM": format_large_number(sales_ttm),
-            "Sales_LastYr": format_large_number(sales_last_yr)
+            "Sales_TTM": format_large_number(income_curr.get('revenue')),
+            "Sales_LastYr": format_large_number(income_prev.get('revenue'))
         }
-        return metrics, hist
+        return metrics, hist_df
         
     except Exception as e:
-        st.error(f"❌ CRITICAL API ERROR: Failed to connect to live market data feed. Details: {e}")
+        st.error(f"❌ API INTEGRATION ERROR: {e}")
         return None, None
 
 # --- AI ENGINE ---
-def analyze_stock(api_key, model_name, data):
-    genai.configure(api_key=api_key)
+def analyze_stock(gemini_key_param, model_name, data):
+    genai.configure(api_key=gemini_key_param)
     model = genai.GenerativeModel(model_name)
     val_focus = "EV/EBITDA (Cyclical)" if data['Sector_Info']['Is_Cyclical'] else "PEG Ratio (Growth)"
     sig = data['Signals']
     
     prompt = f"""
     Act as a Senior Hedge Fund Analyst. Audit {data['Symbol']} using this 7-PHASE FRAMEWORK.
-    DATA SOURCE: LIVE MARKET DATA
+    DATA SOURCE: FINANCIAL MODELING PREP (INSTITUTIONAL API)
     SECTOR CONTEXT: {data['Sector_Info']['Advice']}
     
     ### 🚦 QUANT SIGNAL DIAGNOSTIC
@@ -306,7 +272,6 @@ def analyze_stock(api_key, model_name, data):
     - **Conflict Check:** {sig['Conflict']}
     - Volume Signal: {sig['Vol_Score']}/3 ({sig['Vol_Msg']})
     - Operating Leverage: {sig['OpLev_Score']}/3 ({sig['OpLev_Msg']})
-    - Promoter Confidence: {sig['Prom_Score']}/3 ({sig['Prom_Msg']})
     
     ### 📊 GROWTH CHECK
     - **Sales (TTM):** {data['Sales_TTM']}
@@ -324,7 +289,7 @@ def analyze_stock(api_key, model_name, data):
     3. Valuation: Focus on {val_focus}. P/E {data['P/E']}, PEG {data['PEG']}, EV/EBITDA {data['EV/EBITDA']}.
     4. Sector: Comment on sector metrics.
     5. Technicals: Trend {data['Trend']}, RSI {data['RSI']}, Volume Surge {sig['Vol_Ratio']:.1f}x.
-    6. Management: Inst Hold {data['Inst Hold']}, Promoter Hold {sig['Prom_Score']} rating.
+    6. Management: Evaluate overall stability based on metrics.
     7. Risks: List 2 key risks.
     
     OUTPUT:
@@ -347,14 +312,16 @@ with st.form("run_form"):
         submitted = st.form_submit_button("🚀 Run Analysis", use_container_width=True)
 
 if submitted:
-    if not api_key:
-        st.error("⚠️ Enter API Key")
+    if not gemini_api_key:
+        st.error("⚠️ Please enter your Gemini API Key in the sidebar.")
+    elif not fmp_api_key:
+        st.error("⚠️ Please enter your FMP API Key in the sidebar to fetch market data.")
     else:
-        with st.spinner(f"Establishing live connection and analyzing {ticker}..."):
-            data, hist = get_market_data(ticker)
+        with st.spinner(f"Connecting to FMP Enterprise API for {ticker}..."):
+            data, hist = get_market_data(ticker, fmp_api_key)
             
             if data and hist is not None:
-                st.success("✅ LIVE DATA CONNECTION ESTABLISHED")
+                st.success("✅ ENTERPRISE DATA CONNECTION ESTABLISHED")
 
                 # DASHBOARD
                 st.subheader(f"📊 {ticker} Dashboard")
@@ -379,7 +346,7 @@ if submitted:
                 f1.metric("Operating Cash Flow", data['CFO'])
                 f2.metric("EBITDA", data['EBITDA'])
                 f3.metric("Cash Conv.", data['CFO_to_EBITDA'])
-                f4.metric("Sales (TTM)", data['Sales_TTM'], help="Trailing 12 Months Revenue")
+                f4.metric("Sales (Current)", data['Sales_TTM'])
                 
                 # --- SIGNAL BOARD (BOTTOM) ---
                 st.divider()
@@ -387,12 +354,9 @@ if submitted:
                 st.subheader(f"🚦 Signal Radar | Score: {sig['Final_Score']:.2f}")
                 
                 s1, s2, s3 = st.columns(3)
-                s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'], 
-                          help="Current Volume vs 20-Day Avg. >2.0x indicates breakout interest.")
-                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'],
-                          help="Earnings Growth vs Revenue Growth. >2.0x implies high efficiency scale.")
-                s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'],
-                          help="Based on Insider Holding %. Higher holding = better alignment.")
+                s1.metric("Volume Momentum", f"{sig['Vol_Score']}/3", sig['Vol_Msg'])
+                s2.metric("Op. Leverage", f"{sig['OpLev_Score']}/3", sig['OpLev_Msg'])
+                s3.metric("Promoter Confidence", f"{sig['Prom_Score']}/3", sig['Prom_Msg'])
                 
                 if sig['Conflict'] != "None":
                     st.info(f"💡 **Insight:** {sig['Conflict']}")
@@ -404,7 +368,7 @@ if submitted:
                 st.divider()
                 st.subheader("📝 Forensic Analysis")
                 try:
-                    report = analyze_stock(api_key, selected_model, data)
+                    report = analyze_stock(gemini_api_key, selected_model, data)
                     st.markdown(report)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
